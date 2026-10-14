@@ -86,8 +86,7 @@ function logout(token) {
 function getAppData(token) {
   const actor = auth_(token);
   closeAttendanceIfDue_();
-  const allUsers = rows_(APP.SHEETS.USERS);
-  const account = allUsers.find(user => user.id === actor.id);
+  const account = rows_(APP.SHEETS.USERS).find(user => user.id === actor.id);
   const currentUser = {
     ...actor,
     username: account ? account.username : ''
@@ -97,14 +96,15 @@ function getAppData(token) {
   const today = today_();
   const studentGender = new Map(students.map(student => [String(student.nisn), student.gender || '']));
   const attendanceByStudent = new Map();
-  attendanceRowsForRange_(today, today, true)
+  rows_(APP.SHEETS.ATTENDANCE)
+    .filter(row => row.date === today)
     .forEach(row => attendanceByStudent.set(String(row.nisn), {
       ...row,
       gender: row.gender || studentGender.get(String(row.nisn)) || ''
     }));
   const attendance = Array.from(attendanceByStudent.values());
   const users = actor.role === 'admin'
-    ? allUsers.map(user => ({
+    ? rows_(APP.SHEETS.USERS).map(user => ({
       id: user.id,
       name: user.name,
       username: user.username,
@@ -434,7 +434,7 @@ function recordAttendance(token, nisn) {
   try {
     const id = String(nisn || '').trim(), student = rows_(APP.SHEETS.STUDENTS).find(r => String(r.nisn) === id && String(r.active) !== 'false');
     if (!student) throw new Error('Siswa tidak ditemukan atau sudah tidak aktif.');
-    const date = today_(), all = attendanceRowsForRange_(date, date, true);
+    const date = today_(), all = rows_(APP.SHEETS.ATTENDANCE);
     if (all.some(r => r.date === date && String(r.nisn) === id)) throw new Error('Siswa ini sudah memiliki catatan absensi hari ini.');
     const settings = Object.fromEntries(rows_(APP.SHEETS.SETTINGS).map(r => [r.key,r.value]));
     const now = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'HH:mm');
@@ -478,7 +478,7 @@ function recordAttendanceBulk(token, nisns) {
   try {
     const date = today_();
     const students = rows_(APP.SHEETS.STUDENTS).filter(row => String(row.active) !== 'false');
-    const existing = new Set(attendanceRowsForRange_(date, date, true).map(row => String(row.nisn)));
+    const existing = new Set(rows_(APP.SHEETS.ATTENDANCE).filter(row => row.date === date).map(row => String(row.nisn)));
     const settings = Object.fromEntries(rows_(APP.SHEETS.SETTINGS).map(row => [row.key, row.value]));
     const now = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'HH:mm');
     const defaultStatus = now < (settings.startTime || '11:30') ? 'Hadir' : now <= (settings.endTime || '13:00') ? 'Terlambat' : 'Di luar jadwal';
@@ -506,8 +506,8 @@ function setStudentStatus(token, nisn, status, note) {
   const student = rows_(APP.SHEETS.STUDENTS).find(r => String(r.nisn) === String(nisn) && String(r.active) !== 'false');
   if (!student) throw new Error('Siswa tidak ditemukan.');
   const sh = sheet_(APP.SHEETS.ATTENDANCE);
+  const all = rows_(APP.SHEETS.ATTENDANCE);
   const date = today_();
-  const all = attendanceRowsForRange_(date, date, true);
   const old = all.filter(
     row => row.date === date && String(row.nisn) === String(nisn)
   ).pop();
@@ -540,7 +540,7 @@ function updateAttendanceStatusBulk(token, ids, status, note) {
   lock.waitLock(10000);
   try {
     const date = today_(), sh = sheet_(APP.SHEETS.ATTENDANCE);
-    const rows = attendanceRowsForRange_(date, date, true).filter(row => targets.has(String(row.id)));
+    const rows = rows_(APP.SHEETS.ATTENDANCE).filter(row => row.date === date && targets.has(String(row.id)));
     if (rows.length !== targets.size) throw new Error('Sebagian catatan tidak ditemukan atau bukan catatan hari ini. Muat ulang halaman.');
     rows.forEach(row => {
       sh.getRange(row._row, 8).setValue(status);
@@ -561,7 +561,7 @@ function deleteAttendanceRecords(token, ids) {
   lock.waitLock(10000);
   try {
     const sh = sheet_(APP.SHEETS.ATTENDANCE), date = today_();
-    const rows = attendanceRowsForRange_(date, date, true).filter(row => targets.has(String(row.id)));
+    const rows = rows_(APP.SHEETS.ATTENDANCE).filter(row => row.date === date && targets.has(String(row.id)));
     if (rows.length !== targets.size) throw new Error('Sebagian catatan tidak ditemukan atau bukan catatan hari ini. Muat ulang halaman.');
     rows.map(row => row._row).sort((a, b) => b - a).forEach(rowNumber => sh.deleteRow(rowNumber));
     return rows.length;
@@ -578,7 +578,8 @@ function getReport(token, filters) {
     .filter(row => String(row.active) !== 'false');
   const studentsByNisn = new Map(students.map(student => [String(student.nisn), student]));
   const recordsByDateAndStudent = new Map();
-  attendanceRowsForRange_(from, to, true)
+  rows_(APP.SHEETS.ATTENDANCE)
+    .filter(row => row.date >= from && row.date <= to)
     .forEach(row => {
       const student = studentsByNisn.get(String(row.nisn));
       recordsByDateAndStudent.set(row.date + '|' + row.nisn, {
@@ -692,84 +693,15 @@ function sheet_(name) {
 }
 
 function rows_(name) {
+  if (name === APP.SHEETS.STUDENTS || name === APP.SHEETS.ATTENDANCE) ensureGenderColumns_();
   const sh = sheet_(name);
   const values = sh.getDataRange().getValues();
   if (values.length < 2) return [];
 
-  return recordsFromValues_(values, 2);
-}
-
-/** Read only attendance rows that match a requested date range. */
-function attendanceRowsForRange_(from, to, chronologicalTailOnly) {
-  const sh = sheet_(APP.SHEETS.ATTENDANCE);
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) return [];
-
-  let firstRow = -1;
-  let lastMatchingRow = -1;
-  if (chronologicalTailOnly) {
-    // App writes attendance chronologically. Scanning backward lets current
-    // and recent historical reports stop as soon as they pass the range start.
-    const blockSize = 1500;
-    let cursor = lastRow;
-    while (cursor >= 2) {
-      const start = Math.max(2, cursor - blockSize + 1);
-      const dates = sh.getRange(start, 2, cursor - start + 1, 1).getValues();
-      let olderThanRange = false;
-      for (let i = dates.length - 1; i >= 0; i--) {
-        const date = attendanceDate_(dates[i][0]);
-        const rowNumber = start + i;
-        if (date && date < from) {
-          olderThanRange = true;
-          break;
-        }
-        if (date >= from && date <= to) {
-          if (lastMatchingRow < 0) lastMatchingRow = rowNumber;
-          firstRow = rowNumber;
-        }
-      }
-      if (olderThanRange) break;
-      cursor = start - 1;
-    }
-  } else {
-    // Retain a full-column fallback for callers that need to tolerate manually
-    // reordered rows. Normal app and report paths use the chronological scan.
-    const dates = sh.getRange(2, 2, lastRow - 1, 1).getValues();
-    for (let i = 0; i < dates.length; i++) {
-      const date = attendanceDate_(dates[i][0]);
-      if (date >= from && date <= to) {
-        if (firstRow < 0) firstRow = i + 2;
-        lastMatchingRow = i + 2;
-      }
-    }
-  }
-  if (firstRow < 0) return [];
-
-  const lastColumn = sh.getLastColumn();
-  const headers = sh.getRange(1, 1, 1, lastColumn).getValues()[0].map(String);
-  const values = sh.getRange(firstRow, 1, lastMatchingRow - firstRow + 1, lastColumn).getValues();
-  return recordsFromValues_(values, firstRow, headers)
-    .filter(row => row.date >= from && row.date <= to);
-}
-
-function attendanceDate_(value) {
-  if (value instanceof Date) return Utilities.formatDate(value, 'Asia/Jakarta', 'yyyy-MM-dd');
-  const raw = String(value || '').trim();
-  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
-  // Support legacy date cells stored as text in common Indonesian formats.
-  const match = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-  if (match) return `${match[3]}-${('0' + match[2]).slice(-2)}-${('0' + match[1]).slice(-2)}`;
-  return '';
-}
-
-function recordsFromValues_(values, startRow, headers) {
-  if (!values.length || (!headers && values.length < 2)) return [];
-
-  const keys = headers || values[0].map(String);
-  const dataRows = headers ? values : values.slice(1);
-  return dataRows
+  const keys = values[0].map(String);
+  return values.slice(1)
     .map((row, index) => {
-      const record = { _row: startRow + index };
+      const record = { _row: index + 2 };
       keys.forEach((key, column) => {
         const value = row[column];
         if (key === 'date' && value instanceof Date) {
@@ -782,7 +714,7 @@ function recordsFromValues_(values, startRow, headers) {
           const remainder = minutes % 60;
           record[key] = ('0' + hours).slice(-2) + ':' + ('0' + remainder).slice(-2);
         } else if (key === 'date' && value) {
-          record[key] = attendanceDate_(value);
+          record[key] = String(value).slice(0, 10);
         } else {
           record[key] = value instanceof Date ? value.toISOString() : value;
         }
@@ -836,7 +768,8 @@ function closeAttendanceIfDue_() {
   try {
     if (cache.get(cacheKey)) return 0;
     const students = rows_(APP.SHEETS.STUDENTS).filter(student => String(student.active) !== 'false');
-    const existing = new Set(attendanceRowsForRange_(date, date, true)
+    const existing = new Set(rows_(APP.SHEETS.ATTENDANCE)
+      .filter(row => row.date === date)
       .map(row => String(row.nisn)));
     const missing = students.filter(student => !existing.has(String(student.nisn)));
     const now = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'HH:mm');

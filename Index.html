@@ -5,11 +5,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-<script defer src="https://unpkg.com/html5-qrcode">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/html5-qrcode">
 </script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js">
 </script>
 <style>
 :root {
@@ -281,16 +280,6 @@ input[type=date] {
   padding:7px 10px;
   font-size:12px
 }
-.pagination {
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  gap:12px;
-  padding:12px 2px 2px;
-  color:var(--muted);
-  font-size:12px
-}
-.pagination button:disabled { opacity:.45; cursor:not-allowed }
 .tablewrap {
   width:100%;
   min-width:0;
@@ -654,83 +643,12 @@ tr:last-child td {
 </head>
 <body>
 <div id="app">
-<div class="loginwrap" role="status" aria-live="polite">
-<div class="login">
-<div class="brand"><div class="mark">☾</div><strong>ABSENSI DZUHUR<small>SMK Batik 1 Surakarta</small></strong></div>
-<h1>Selamat datang</h1>
-<p>Masuk untuk melanjutkan pengelolaan absensi sholat.</p>
-<div class="field"><label>USERNAME</label><input class="input" autocomplete="username" placeholder="contoh: petugas"></div>
-<div class="field"><label>PASSWORD</label><input class="input" type="password" autocomplete="current-password" placeholder="Password"></div>
-<button class="btn" id="loginbtn" type="button">Masuk ke aplikasi</button>
-<div class="note" id="boot-error" role="alert" hidden></div>
-</div>
-</div>
 </div>
 <div id="loadingoverlay" class="loading-overlay" role="status" aria-live="polite" hidden>
 <div class="loading-card"><span class="loading-spinner" aria-hidden="true"></span><span>Sedang memproses data…</span></div>
 </div>
 <script>
-(() => {
-  const showBootError = message => {
-    let box = document.getElementById('boot-error');
-    if (!box) {
-      box = document.createElement('div');
-      box.id = 'boot-error';
-      box.className = 'note';
-      box.setAttribute('role', 'alert');
-      document.querySelector('#app .login')?.appendChild(box);
-    }
-    if (box) {
-      box.hidden = false;
-      box.textContent = 'Aplikasi gagal dimuat: ' + message;
-    }
-  };
-  window.addEventListener('error', event => showBootError(event.message || 'kesalahan JavaScript'));
-  window.addEventListener('unhandledrejection', event => showBootError(event.reason?.message || String(event.reason || 'permintaan gagal')));
-  document.getElementById('loginbtn')?.addEventListener('click', () => {
-    const button = document.getElementById('loginbtn');
-    const username = document.querySelector('#app input[autocomplete="username"]')?.value || '';
-    const password = document.querySelector('#app input[type="password"]')?.value || '';
-    if (!username || !password || !window.google?.script?.run) {
-      showBootError('Isi username dan password, lalu muat ulang jika tombol tidak berjalan.');
-      return;
-    }
-    button.disabled = true;
-    google.script.run
-      .withSuccessHandler(result => {
-        try { sessionStorage.setItem('token', result.token); } catch (error) {}
-        try {
-          if (typeof state !== 'undefined' && typeof init === 'function') {
-            state.token = result.token;
-            if (typeof saveSessionToken === 'function') saveSessionToken(result.token);
-            Promise.resolve(init()).catch(error => showBootError(error?.message || String(error)));
-          } else {
-            window.location.reload();
-          }
-        } catch (error) {
-          showBootError(error?.message || String(error));
-        }
-      })
-      .withFailureHandler(error => {
-        button.disabled = false;
-        showBootError(error?.message || String(error));
-      })
-      .login(username, password);
-  });
-})();
-</script>
-<script>
 const $ = selector => document.querySelector(selector);
-function readSessionToken() {
-  try { return sessionStorage.getItem('token') || ''; }
-  catch (error) { return ''; }
-}
-function clearSessionToken() {
-  try { sessionStorage.removeItem('token'); } catch (error) {}
-}
-function saveSessionToken(token) {
-  try { sessionStorage.setItem('token', token); } catch (error) {}
-}
 const ATTENDANCE_STATUS_OPTIONS = [
   { value: 'Hadir', label: 'Hadir' },
   { value: 'Terlambat', label: 'Terlambat' },
@@ -742,7 +660,7 @@ const ATTENDANCE_STATUS_OPTIONS = [
   { value: 'Berhalangan', label: 'Berhalangan' }
 ];
 let state = {
-  token: readSessionToken(),
+  token: sessionStorage.getItem('token') || '',
   data: null,
   tab: 'home',
   scanner: null,
@@ -757,30 +675,6 @@ let state = {
   attendanceSelected: new Set(),
   attendanceStatuses: new Map()
 };
-const TABLE_PAGE_SIZE = 50;
-
-function pageRows(rows, key) {
-  const pages = Math.max(1, Math.ceil(rows.length / TABLE_PAGE_SIZE));
-  state[key] = Math.max(1, Math.min(Number(state[key]) || 1, pages));
-  const start = (state[key] - 1) * TABLE_PAGE_SIZE;
-  return rows.slice(start, start + TABLE_PAGE_SIZE);
-}
-
-function paginationMarkup(rows, key) {
-  const pages = Math.ceil(rows.length / TABLE_PAGE_SIZE);
-  if (pages <= 1) return '';
-  const page = state[key] || 1;
-  return `<div class="pagination"><span>Halaman ${page} dari ${pages} · ${rows.length} data</span><div><button class="btn secondary small" data-page-key="${key}" data-page-delta="-1" ${page <= 1 ? 'disabled' : ''}>Sebelumnya</button> <button class="btn secondary small" data-page-key="${key}" data-page-delta="1" ${page >= pages ? 'disabled' : ''}>Berikutnya</button></div></div>`;
-}
-
-function bindPagination(container, key, redraw) {
-  container?.querySelectorAll('[data-page-key]').forEach(button => {
-    button.onclick = () => {
-      state[key] = (state[key] || 1) + Number(button.dataset.pageDelta);
-      redraw();
-    };
-  });
-}
 
 const SUBMISSION_CALLS = new Set([
   'bootstrapAdmin','login','logout','saveSettings','saveProfile','recordAttendanceBulk',
@@ -845,52 +739,56 @@ function toast(message) {
 function fail(e) {
   toast(e.message || String(e));
   if ((e.message || '').includes('Sesi berakhir')) {
-    clearSessionToken();
+    sessionStorage.removeItem('token');
     state.token = '';
     renderLogin();
   }
 }
 
-function renderDatabaseSetup() {
-  $('#app').innerHTML=`<div class="loginwrap"><div class="login">
-<div class="brand"><div class="mark">☾</div><strong>ABSENSI DZUHUR<small>SMK Batik 1 Surakarta</small></strong></div>
-<h1>Database belum disiapkan</h1>
-<p>Buka editor Apps Script dari spreadsheet, jalankan fungsi <b>setupDatabase()</b>, izinkan akses, lalu muat ulang aplikasi.</p>
-</div></div>`;
-}
-
-async function showLoginForCurrentSetup() {
-  try {
-    const status=await call('getSetupState');
-    if(!status.ready)renderDatabaseSetup();
-    else if(!status.hasAdmin)renderLogin(true);
-  } catch(error) {
-    // Keep the login form visible when setup checking is slow or unavailable.
-  }
-}
-
 async function init() {
-  const overlay=$('#loadingoverlay');
-  if(!state.token) {
-    // Keep the login screen responsive while checking whether first-admin setup is needed.
-    renderLogin();
-    showLoginForCurrentSetup();
-    return;
-  }
-
-  if(overlay)overlay.hidden=false;
   try {
-    state.data=await call('getAppData',state.token);
-    state.students=state.data.students;
+    state.data = await call('getAppData', state.token);
+    state.students = state.data.students;
     render();
-  } catch(error) {
-    clearSessionToken();
-    state.token='';
-    state.data=null;
-    renderLogin();
-    showLoginForCurrentSetup();
-  } finally {
-    if(overlay)overlay.hidden=true;
+  } catch (error) {
+    if ((error.message || '').includes('Database')) {
+      $('#app').innerHTML = `
+        <div class="loginwrap">
+          <div class="login">
+            <div class="brand">
+              <div class="mark">☾</div>
+              <strong>ABSENSI DZUHUR<small>SMK Batik 1 Surakarta</small></strong>
+            </div>
+            <h1>Database belum disiapkan</h1>
+            <p>Buka editor Apps Script, jalankan fungsi <b>setupDatabase()</b>, izinkan akses, lalu muat ulang aplikasi.</p>
+          </div>
+        </div>`;
+    } else if (state.token) {
+      sessionStorage.removeItem('token');
+      state.token = '';
+      init();
+    } else {
+      try {
+        const status = await call('getSetupState');
+        if (!status.ready) {
+          $('#app').innerHTML = `
+            <div class="loginwrap">
+              <div class="login">
+                <div class="brand">
+                  <div class="mark">☾</div>
+                  <strong>ABSENSI DZUHUR<small>SMK Batik 1 Surakarta</small></strong>
+                </div>
+                <h1>Database belum disiapkan</h1>
+                <p>Buka editor Apps Script dari spreadsheet, jalankan fungsi <b>setupDatabase()</b>, izinkan akses, lalu muat ulang aplikasi.</p>
+              </div>
+            </div>`;
+          return;
+        }
+        renderLogin(!status.hasAdmin);
+      } catch (setupError) {
+        renderLogin();
+      }
+    }
   }
 }
 
@@ -912,7 +810,6 @@ function renderLogin(bootstrap=false) {
 <input class="input" id="password" type="password" autocomplete="current-password" placeholder="Minimal 8 karakter">
 </div>
 <button class="btn" id="loginbtn">${bootstrap?'Buat akun admin':'Masuk ke aplikasi'}</button>
-<div class="note" id="boot-error" role="alert" hidden></div>
 <div class="note">Data absensi tersimpan pada spreadsheet sekolah. Jangan bagikan akun petugas.</div>
 </div>
 </div>`;
@@ -920,7 +817,7 @@ function renderLogin(bootstrap=false) {
     try {
       const res=bootstrap?await call('bootstrapAdmin',$('#lname').value,$('#username').value,$('#password').value):await call('login',$('#username').value,$('#password').value);
       state.token=res.token;
-      saveSessionToken(state.token);
+      sessionStorage.setItem('token',state.token);
       init()
           } catch(e) {
       toast(e.message)
@@ -983,7 +880,7 @@ function render() {
     if (state.poller) clearInterval(state.poller);
     state.poller = null;
     await call('logout',state.token);
-    clearSessionToken();
+    sessionStorage.removeItem('token');
     state.token='';
     renderLogin()
       }
@@ -1008,7 +905,6 @@ function renderView() {
   const pending=d.students.filter(s=>!today.some(a=>String(a.nisn)===String(s.nisn))).length;
 
   if(state.tab==='home') {
-    const recentActivity=pageRows(today.slice().reverse(),'homeActivityPage');
     v.innerHTML=`<div class="heading">
 <div>
 <h1>Ringkasan harian</h1>
@@ -1022,15 +918,13 @@ function renderView() {
 <div class="cardtitle">
 <h2>Aktivitas absensi</h2>
 <span>${esc(d.today)}</span>
-</div>${table(recentActivity,false)}${paginationMarkup(today,'homeActivityPage')}</div>
+</div>${table(today.slice().reverse(),false)}</div>
 <div class="card">
 <div class="cardtitle">
 <h2>Belum absen</h2>
 <span>${pending} siswa</span>
-</div><div>${pendingList(d.students.filter(s=>!today.some(a=>String(a.nisn)===String(s.nisn))))}</div></div>
+</div><div class="pending-scroll">${pendingList(d.students.filter(s=>!today.some(a=>String(a.nisn)===String(s.nisn))))}</div></div>
 </div>`
-    bindPagination(v,'homeActivityPage',renderView);
-    bindPagination(v,'homePendingPage',renderView);
       } 
   else if(state.tab==='attendance') {
     v.innerHTML=`<div class="heading">
@@ -1089,17 +983,17 @@ function renderView() {
 <div id="todayrecords">${drawTodayRecords()}</div>
 </div>`;
     drawPending();
+    $('#pendingsearch').oninput=drawPending;
     $('#captureqr').onclick=()=>$('#captureqrfile').click();
     $('#captureqrfile').onchange=scanQRPhoto;
     $('#manualadd').onclick=()=>scan($('#manualnisn').value)
-    ;['pendingsearch','attendanceMajor','attendanceClass'].forEach(id=>$('#'+id).addEventListener(id==='pendingsearch'?'input':'change',()=>{state.pendingPage=1;drawPending()}));
+    ;['pendingsearch','attendanceMajor','attendanceClass'].forEach(id=>$('#'+id).oninput=drawPending);
     $('#savebulk').onclick=saveBulkAttendance;
     $('#todaysearch').oninput=()=>{
-      state.todayPage=1;
       $('#todayrecords').innerHTML=drawTodayRecords();
       bindTodayRecordChecks();
     };
-    ['todaymajor','todayclass'].forEach(id=>$('#'+id).onchange=()=>{state.todayPage=1;const el=$('#todayrecords');if(el)el.innerHTML=drawTodayRecords();bindTodayRecordChecks()});
+    ['todaymajor','todayclass'].forEach(id=>$('#'+id).onchange=()=>{const el=$('#todayrecords');if(el)el.innerHTML=drawTodayRecords();bindTodayRecordChecks()});
     $('#editattendance').onclick=editAttendanceStatus;
     $('#deleteattendance').onclick=deleteAttendanceSelection;
     bindTodayRecordChecks();
@@ -1127,7 +1021,10 @@ function renderView() {
 <div id="studenttable">
 </div>
 </div>`;
-    ['studentsearch','gradefilter','majorfilter','classfilter'].forEach(id=>$('#'+id).addEventListener(id==='studentsearch'?'input':'change',()=>{state.studentPage=1;drawStudents()}));
+    $('#studentsearch').oninput=drawStudents;
+    $('#gradefilter').onchange=drawStudents;
+    $('#majorfilter').onchange=drawStudents;
+    $('#classfilter').onchange=drawStudents;
     if(d.user.role==='admin') {
       $('#templatebtn').onclick=downloadStudentTemplate;
       $('#uploadbtn').onclick=()=>$('#studentfile').click();
@@ -1168,10 +1065,10 @@ function renderView() {
     </option>`).join('')}</select>
 </div>
 <div id="reporttable">
-${renderReportRows(pageRows(initialReport,'reportPage'))}${paginationMarkup(initialReport,'reportPage')}
+${renderReportRows(initialReport)}
 </div>
 </div>`;
-    ['from','to','rgrade','rmajor','rclass','rstatus'].forEach(id=>$('#'+id).onchange=()=>{state.reportPage=1;loadReport()});
+    ['from','to','rgrade','rmajor','rclass','rstatus'].forEach(id=>$('#'+id).onchange=()=>loadReport());
     $('#download').onclick=downloadReport;
     loadReport();
       } 
@@ -1423,23 +1320,19 @@ function table(rows,manage=false,teachers=false,selectable=false,attendanceLog=f
   }
 
 function pendingList(rows) {
-  const visibleRows=pageRows(rows,'homePendingPage');
-  return rows.length?`<div class="pending-scroll">${visibleRows.map(s=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)">
+  return rows.length?rows.map(s=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)">
 <span>
 <b>${esc(s.name)}</b>
 <div class="sub">${esc(genderText(s.gender))} · ${esc(s.grade)} · ${esc(s.className)} · ${esc(s.nisn)}</div>
 </span>
 <button class="btn small secondary" onclick="quickStatus('${esc(s.nisn)}')">Pilih status</button>
-</div>`).join('')}</div>${paginationMarkup(rows,'homePendingPage')}`:'<div class="empty">Semua siswa sudah memiliki catatan.</div>'
+</div>`).join(''):'<div class="empty">Semua siswa sudah memiliki catatan.</div>'
   }
 
 function drawPending() {
   const d=state.data,q=($('#pendingsearch')?.value||'').toLowerCase(),major=$('#attendanceMajor')?.value||'',className=$('#attendanceClass')?.value||'',rows=d.students.filter(s=>!d.attendance.some(a=>String(a.nisn)===String(s.nisn))&&(`${s.name} ${s.nisn} ${s.className} ${s.major}`).toLowerCase().includes(q)&&(!major||s.major===major)&&(!className||s.className===className));
   if($('#pendinglist')) {
-    const visibleRows=pageRows(rows,'pendingPage');
-    const target=$('#pendinglist');
-    target.innerHTML=rows.length?`<div class="limited-list"><div class="check-row check-header"><span aria-hidden="true" style="width:17px"></span><span style="flex:1">Siswa</span><span>Status</span></div>${visibleRows.map(s=>`<div class="check-row"><input type="checkbox" class="attendancecheck" aria-label="Pilih ${esc(s.name)} untuk disimpan" value="${esc(s.nisn)}" ${state.attendanceSelected.has(String(s.nisn))?'checked':''}><span style="flex:1;min-width:0"><b>${esc(s.name)}</b><div class="sub">${esc(genderText(s.gender))} · ${esc(s.grade)} · ${esc(s.className)} · ${esc(s.major)} · ${esc(s.nisn)}</div></span><select class="attendance-status input" aria-label="Status ${esc(s.name)}" data-nisn="${esc(s.nisn)}">${ATTENDANCE_STATUS_OPTIONS.map(status=>`<option value="${esc(status.value)}" ${((state.attendanceStatuses.get(String(s.nisn))||'Hadir')===status.value)?'selected':''}>${esc(status.label)}</option>`).join('')}</select></div>`).join('')}</div>${paginationMarkup(rows,'pendingPage')}`:'<div class="empty">Semua siswa pada filter ini sudah memiliki catatan.</div>';
-    bindPagination(target,'pendingPage',drawPending);
+    $('#pendinglist').innerHTML=rows.length?`<div class="limited-list"><div class="check-row check-header"><span aria-hidden="true" style="width:17px"></span><span style="flex:1">Siswa</span><span>Status</span></div>${rows.map(s=>`<div class="check-row"><input type="checkbox" class="attendancecheck" aria-label="Pilih ${esc(s.name)} untuk disimpan" value="${esc(s.nisn)}" ${state.attendanceSelected.has(String(s.nisn))?'checked':''}><span style="flex:1;min-width:0"><b>${esc(s.name)}</b><div class="sub">${esc(genderText(s.gender))} · ${esc(s.grade)} · ${esc(s.className)} · ${esc(s.major)} · ${esc(s.nisn)}</div></span><select class="attendance-status input" aria-label="Status ${esc(s.name)}" data-nisn="${esc(s.nisn)}">${ATTENDANCE_STATUS_OPTIONS.map(status=>`<option value="${esc(status.value)}" ${((state.attendanceStatuses.get(String(s.nisn))||'Hadir')===status.value)?'selected':''}>${esc(status.label)}</option>`).join('')}</select></div>`).join('')}</div>`:'<div class="empty">Semua siswa pada filter ini sudah memiliki catatan.</div>';
     document.querySelectorAll('.attendancecheck').forEach(input=>input.onchange=()=>{input.checked?state.attendanceSelected.add(input.value):state.attendanceSelected.delete(input.value);updateBulkSelection()});
     document.querySelectorAll('.attendance-status').forEach(select=>select.onchange=()=>state.attendanceStatuses.set(select.dataset.nisn,select.value));
     $('#pendingcount').textContent=`${rows.length} siswa`;
@@ -1479,26 +1372,20 @@ function drawTodayRecords() {
     `${record.studentName} ${record.nisn} ${record.className} ${record.major}`.toLowerCase().includes(q)&&(!major||record.major===major)&&(!className||record.className===className)
   ).slice().reverse();
   if(!rows.length)return '<div class="empty">Tidak ada catatan yang cocok.</div>';
-  const visibleRows=pageRows(rows,'todayPage');
-  const allSelected=visibleRows.every(record=>state.attendanceRecordSelected.has(String(record.id)));
+  const allSelected=rows.every(record=>state.attendanceRecordSelected.has(String(record.id)));
   return `<div class="tablewrap"><table>
 <thead><tr><th><input type="checkbox" id="todayselectall" aria-label="Pilih semua hasil pencarian" ${allSelected?'checked':''}></th><th>Siswa</th><th>Jenis kelamin</th><th>Kelas / jurusan</th><th>Status</th><th>Waktu</th><th>Petugas</th></tr></thead>
-<tbody>${visibleRows.map(record=>`<tr>
+<tbody>${rows.map(record=>`<tr>
 <td><input type="checkbox" class="todayrecordcheck" value="${esc(record.id)}" aria-label="Pilih catatan ${esc(record.studentName)}" ${state.attendanceRecordSelected.has(String(record.id))?'checked':''}></td>
 <td><span class="person">${esc(record.studentName)}</span><div class="sub">NISN ${esc(record.nisn)}</div></td>
 <td>${esc(genderText(record.gender))}</td>
 <td>${esc(record.grade)} · ${esc(record.className)}<div class="sub">${esc(record.major)}</div></td>
 <td>${badge(record.status)}${record.note?`<div class="sub">${esc(record.note)}</div>`:''}</td>
 <td>${esc(record.time||'—')}</td><td>${esc(record.recordedBy||'—')}</td>
-</tr>`).join('')}</tbody></table></div>${paginationMarkup(rows,'todayPage')}`;
+</tr>`).join('')}</tbody></table></div>`;
 }
 
 function bindTodayRecordChecks() {
-  bindPagination($('#todayrecords'),'todayPage',()=>{
-    const target=$('#todayrecords');
-    if(target)target.innerHTML=drawTodayRecords();
-    bindTodayRecordChecks();
-  });
   const all=$('#todayselectall');
   const visible=[...document.querySelectorAll('.todayrecordcheck')];
   if(all)all.onchange=()=>{
@@ -1596,10 +1483,7 @@ function drawStudents() {
     (!grade || student.grade === grade) &&
     (!major || student.major === major) && (!className || student.className === className)
   );
-  const visibleRows=pageRows(rows,'studentPage');
-  const target=$('#studenttable');
-  target.innerHTML=table(visibleRows,state.data.user.role==='admin',false,state.data.user.role==='admin')+paginationMarkup(rows,'studentPage');
-  bindPagination(target,'studentPage',drawStudents);
+  $('#studenttable').innerHTML=table(rows,state.data.user.role==='admin',false,state.data.user.role==='admin');
   if(state.data.user.role==='admin') {
     const all=$('#selectvisible');
     if(all)all.onchange=()=> {
@@ -2028,17 +1912,10 @@ async function loadReport(backgroundRefresh = false) {
     const target=$('#reporttable');
     if(state.tab!=='reports'||!target||JSON.stringify(filters)!==JSON.stringify(state.reportFilters))return;
     state.report=rows;
-    renderCurrentReportPage();
+    target.innerHTML=renderReportRows(rows);
       } catch(e) {
     if(state.tab==='reports')fail(e)
       }
-}
-
-function renderCurrentReportPage() {
-  const target=$('#reporttable');
-  if(!target)return;
-  target.innerHTML=renderReportRows(pageRows(state.report||[],'reportPage'))+paginationMarkup(state.report||[],'reportPage');
-  bindPagination(target,'reportPage',renderCurrentReportPage);
 }
 
 function buildTodayReportRows() {
