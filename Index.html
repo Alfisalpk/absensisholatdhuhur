@@ -10,6 +10,7 @@
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js">
 </script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <style>
 :root {
   --ink:#17231f;
@@ -214,6 +215,12 @@ button {
 }
 .layout {
   grid-template-columns:1.35fr .9fr
+}
+.attendance-pending {
+  grid-column:1 / -1
+}
+.attendance-layout {
+  grid-template-columns:1fr
 }
 .cardtitle {
   display:flex;
@@ -668,8 +675,10 @@ let state = {
   polling: false,
   reportFilters: null,
   attendanceRecordSelected: new Set(),
+  pendingPage: 1,
   reportRangeKey: '',
   reportRangeRows: null,
+  reportPage: 1,
   students: [],
   selectedStudents: new Set(),
   attendanceSelected: new Set(),
@@ -810,7 +819,7 @@ function renderLogin(bootstrap=false) {
 <input class="input" id="password" type="password" autocomplete="current-password" placeholder="Minimal 8 karakter">
 </div>
 <button class="btn" id="loginbtn">${bootstrap?'Buat akun admin':'Masuk ke aplikasi'}</button>
-<div class="note">Data absensi tersimpan pada spreadsheet sekolah. Jangan bagikan akun petugas.</div>
+<div class="note">Data absensi tersimpan pada spreadsheet <strong>LABORAN SMK BATIK 1 SURAKARTA</strong></div>
 </div>
 </div>`;
   $('#loginbtn').onclick=async()=> {
@@ -933,7 +942,7 @@ function renderView() {
 <p>Catat kehadiran dengan memindai QR atau memilih beberapa siswa sekaligus.</p>
 </div>
 </div>
-<div class="grid layout">
+<div class="grid layout attendance-layout">
 <div class="card">
 <div class="cardtitle">
 <h2>Scan kartu siswa</h2>
@@ -951,7 +960,7 @@ function renderView() {
 <button class="btn secondary" id="manualadd">Catat NISN</button>
 </div>
 </div>
-<div class="card">
+<div class="card attendance-pending">
 <div class="cardtitle">
 <h2>Belum absen</h2>
 <span id="pendingcount">
@@ -964,7 +973,7 @@ function renderView() {
 </div>
 <div id="pendinglist">
 </div>
-<div class="toolbar" style="margin-top:12px;margin-bottom:0"><button class="btn" id="savebulk">Simpan status terpilih</button><span class="sub" id="bulkselection">0 siswa dipilih</span></div>
+<div class="toolbar" style="margin-top:12px;margin-bottom:0"><button class="btn" id="savebulk">Simpan status terpilih</button><span class="sub" id="bulkselection">0 siswa dipilih</span><span class="sub" id="bulksavestatus" role="status" aria-live="polite"></span></div>
 </div>
 </div>
 <div class="card" style="margin-top:16px">
@@ -983,11 +992,11 @@ function renderView() {
 <div id="todayrecords">${drawTodayRecords()}</div>
 </div>`;
     drawPending();
-    $('#pendingsearch').oninput=drawPending;
     $('#captureqr').onclick=()=>$('#captureqrfile').click();
     $('#captureqrfile').onchange=scanQRPhoto;
     $('#manualadd').onclick=()=>scan($('#manualnisn').value)
-    ;['pendingsearch','attendanceMajor','attendanceClass'].forEach(id=>$('#'+id).oninput=drawPending);
+    $('#pendingsearch').oninput=()=>{state.pendingPage=1;drawPending()};
+    ;['attendanceMajor','attendanceClass'].forEach(id=>$('#'+id).onchange=()=>{state.pendingPage=1;drawPending()});
     $('#savebulk').onclick=saveBulkAttendance;
     $('#todaysearch').oninput=()=>{
       $('#todayrecords').innerHTML=drawTodayRecords();
@@ -1036,14 +1045,15 @@ function renderView() {
   else if(state.tab==='reports') {
     state.reportRangeKey='';
     state.reportRangeRows=null;
+    state.reportPage=1;
     const initialReport=buildTodayReportRows();
     state.report=initialReport;
     v.innerHTML=`<div class="heading">
 <div>
 <h1>Rekap absensi</h1>
-<p>Filter dan unduh laporan absensi siswa dalam format CSV.</p>
+<p>Filter data absensi dan unduh rincian atau hitungan status siswa.</p>
 </div>
-<button class="btn" id="download">↓ Unduh CSV</button>
+<div class="toolbar" style="margin:0"><button class="btn secondary" id="download">↓ Unduh CSV</button><button class="btn" id="downloadcount">↓ Unduh hitung absensi (.xlsx)</button></div>
 </div>
 <div class="card">
 <div class="toolbar">
@@ -1065,11 +1075,12 @@ function renderView() {
     </option>`).join('')}</select>
 </div>
 <div id="reporttable">
-${renderReportRows(initialReport)}
+<div class="empty">Memuat data rekap…</div>
 </div>
 </div>`;
-    ['from','to','rgrade','rmajor','rclass','rstatus'].forEach(id=>$('#'+id).onchange=()=>loadReport());
+    ['from','to','rgrade','rmajor','rclass','rstatus'].forEach(id=>$('#'+id).onchange=()=>{state.reportPage=1;loadReport()});
     $('#download').onclick=downloadReport;
+    $('#downloadcount').onclick=downloadAttendanceCounts;
     loadReport();
       } 
   else if(state.tab==='qrcodes') {
@@ -1332,7 +1343,13 @@ function pendingList(rows) {
 function drawPending() {
   const d=state.data,q=($('#pendingsearch')?.value||'').toLowerCase(),major=$('#attendanceMajor')?.value||'',className=$('#attendanceClass')?.value||'',rows=d.students.filter(s=>!d.attendance.some(a=>String(a.nisn)===String(s.nisn))&&(`${s.name} ${s.nisn} ${s.className} ${s.major}`).toLowerCase().includes(q)&&(!major||s.major===major)&&(!className||s.className===className));
   if($('#pendinglist')) {
-    $('#pendinglist').innerHTML=rows.length?`<div class="limited-list"><div class="check-row check-header"><span aria-hidden="true" style="width:17px"></span><span style="flex:1">Siswa</span><span>Status</span></div>${rows.map(s=>`<div class="check-row"><input type="checkbox" class="attendancecheck" aria-label="Pilih ${esc(s.name)} untuk disimpan" value="${esc(s.nisn)}" ${state.attendanceSelected.has(String(s.nisn))?'checked':''}><span style="flex:1;min-width:0"><b>${esc(s.name)}</b><div class="sub">${esc(genderText(s.gender))} · ${esc(s.grade)} · ${esc(s.className)} · ${esc(s.major)} · ${esc(s.nisn)}</div></span><select class="attendance-status input" aria-label="Status ${esc(s.name)}" data-nisn="${esc(s.nisn)}">${ATTENDANCE_STATUS_OPTIONS.map(status=>`<option value="${esc(status.value)}" ${((state.attendanceStatuses.get(String(s.nisn))||'Hadir')===status.value)?'selected':''}>${esc(status.label)}</option>`).join('')}</select></div>`).join('')}</div>`:'<div class="empty">Semua siswa pada filter ini sudah memiliki catatan.</div>';
+    const pageSize=16,totalPages=Math.max(1,Math.ceil(rows.length/pageSize));
+    state.pendingPage=Math.min(Math.max(1,state.pendingPage||1),totalPages);
+    const start=(state.pendingPage-1)*pageSize,pageRows=rows.slice(start,start+pageSize);
+    $('#pendinglist').innerHTML=rows.length?`<div><div class="check-row check-header"><span aria-hidden="true" style="width:17px"></span><span style="flex:1">Siswa</span><span>Status</span></div>${pageRows.map(s=>`<div class="check-row"><input type="checkbox" class="attendancecheck" aria-label="Pilih ${esc(s.name)} untuk disimpan" value="${esc(s.nisn)}" ${state.attendanceSelected.has(String(s.nisn))?'checked':''}><span style="flex:1;min-width:0"><b>${esc(s.name)}</b><div class="sub">${esc(genderText(s.gender))} · ${esc(s.grade)} · ${esc(s.className)} · ${esc(s.major)} · ${esc(s.nisn)}</div></span><select class="attendance-status input" aria-label="Status ${esc(s.name)}" data-nisn="${esc(s.nisn)}">${ATTENDANCE_STATUS_OPTIONS.map(status=>`<option value="${esc(status.value)}" ${((state.attendanceStatuses.get(String(s.nisn))||'Hadir')===status.value)?'selected':''}>${esc(status.label)}</option>`).join('')}</select></div>`).join('')}</div><div class="toolbar" style="justify-content:space-between;margin:10px 0 0"><span class="sub">Menampilkan ${start+1}–${Math.min(start+pageSize,rows.length)} dari ${rows.length} siswa</span><div class="toolbar" style="margin:0"><button class="btn secondary small" id="pendingPrev" ${state.pendingPage<=1?'disabled':''}>Sebelumnya</button><span class="sub">Halaman ${state.pendingPage} dari ${totalPages}</span><button class="btn secondary small" id="pendingNext" ${state.pendingPage>=totalPages?'disabled':''}>Berikutnya</button></div></div>`:'<div class="empty">Semua siswa pada filter ini sudah memiliki catatan.</div>';
+    const prev=$('#pendingPrev'),next=$('#pendingNext');
+    if(prev)prev.onclick=()=>{state.pendingPage--;drawPending()};
+    if(next)next.onclick=()=>{state.pendingPage++;drawPending()};
     document.querySelectorAll('.attendancecheck').forEach(input=>input.onchange=()=>{input.checked?state.attendanceSelected.add(input.value):state.attendanceSelected.delete(input.value);updateBulkSelection()});
     document.querySelectorAll('.attendance-status').forEach(select=>select.onchange=()=>state.attendanceStatuses.set(select.dataset.nisn,select.value));
     $('#pendingcount').textContent=`${rows.length} siswa`;
@@ -1349,7 +1366,9 @@ async function saveBulkAttendance() {
   const entries=[...state.attendanceSelected].map(nisn=>({nisn,status:state.attendanceStatuses.get(nisn)||'Hadir'}));
   if(!entries.length){toast('Pilih siswa dan status absensinya terlebih dahulu.');return;}
   const button=$('#savebulk');
-  if(button)button.disabled=true;
+  const status=$('#bulksavestatus');
+  if(button){button.disabled=true;button.textContent='Menyimpan…';}
+  if(status)status.textContent='Sedang menyimpan absensi terpilih. Mohon tunggu…';
   try {
     const result=await call('recordAttendanceBulk',state.token,entries);
     state.attendanceSelected.clear();
@@ -1358,8 +1377,8 @@ async function saveBulkAttendance() {
     state.data=await call('getAppData',state.token);
     state.students=state.data.students;
     renderView();
-  } catch(error) { fail(error); }
-  finally { if(button)button.disabled=false; }
+  } catch(error) { if(status)status.textContent='Penyimpanan gagal.'; fail(error); }
+  finally { if(button&&button.isConnected){button.disabled=false;button.textContent='Simpan status terpilih';} }
 }
 
 function drawTodayRecords() {
@@ -1898,6 +1917,9 @@ async function loadReport(backgroundRefresh = false) {
     };
   }
 
+  const target=$('#reporttable');
+  if(!backgroundRefresh&&state.tab==='reports'&&target)target.innerHTML='<div class="empty">Memuat data rekap…</div>';
+
   try {
     const filters = {...state.reportFilters};
     const rangeKey=`${filters.from}|${filters.to}`;
@@ -1909,12 +1931,17 @@ async function loadReport(backgroundRefresh = false) {
       state.reportRangeKey=rangeKey;
     }
     const rows=state.reportRangeRows.filter(row=>(!filters.grade||String(row.grade)===String(filters.grade))&&(!filters.major||String(row.major)===String(filters.major))&&(!filters.className||String(row.className)===String(filters.className))&&(!filters.status||row.status===filters.status));
-    const target=$('#reporttable');
-    if(state.tab!=='reports'||!target||JSON.stringify(filters)!==JSON.stringify(state.reportFilters))return;
+    const currentTarget=$('#reporttable');
+    if(state.tab!=='reports'||!currentTarget||JSON.stringify(filters)!==JSON.stringify(state.reportFilters))return;
     state.report=rows;
-    target.innerHTML=renderReportRows(rows);
+    currentTarget.innerHTML=renderReportRows(rows);
+    bindReportPagination();
       } catch(e) {
-    if(state.tab==='reports')fail(e)
+    if(state.tab==='reports') {
+      const currentTarget=$('#reporttable');
+      if(currentTarget)currentTarget.innerHTML='<div class="empty">Data rekap gagal dimuat. Silakan coba kembali.</div>';
+      fail(e)
+    }
       }
 }
 
@@ -1940,6 +1967,9 @@ function buildTodayReportRows() {
 }
 
 function renderReportRows(rows) {
+  const pageSize=50,totalPages=Math.max(1,Math.ceil(rows.length/pageSize));
+  state.reportPage=Math.min(Math.max(1,state.reportPage||1),totalPages);
+  const start=(state.reportPage-1)*pageSize,pageRows=rows.slice(start,start+pageSize);
   return rows.length?`<div class="tablewrap">
 <table>
 <thead>
@@ -1954,7 +1984,7 @@ function renderReportRows(rows) {
 <th>Petugas</th>
 </tr>
 </thead>
-<tbody>${rows.map(r=>`<tr>
+<tbody>${pageRows.map(r=>`<tr>
     <td>${
       esc(r.date)
           }
@@ -1994,9 +2024,171 @@ function renderReportRows(rows) {
           }
     </td>
     <td>${esc(r.recordedBy||'—')}</td>
-    </tr>`).join('')}</tbody>
+</tr>`).join('')}</tbody>
 </table>
+</div><div class="toolbar" style="justify-content:space-between;margin:12px 0 0">
+<span class="sub">Menampilkan ${start+1}–${Math.min(start+pageSize,rows.length)} dari ${rows.length} data</span>
+<div class="toolbar" style="margin:0"><button class="btn secondary small" id="reportPrev" ${state.reportPage<=1?'disabled':''}>Sebelumnya</button><span class="sub">Halaman ${state.reportPage} dari ${totalPages}</span><button class="btn secondary small" id="reportNext" ${state.reportPage>=totalPages?'disabled':''}>Berikutnya</button></div>
 </div>`:'<div class="empty">Tidak ada catatan sesuai filter.</div>';
+}
+
+function bindReportPagination() {
+  const prev=$('#reportPrev'),next=$('#reportNext');
+  if(prev)prev.onclick=()=>{if(state.reportPage>1){state.reportPage--;const target=$('#reporttable');target.innerHTML=renderReportRows(state.report);bindReportPagination()}};
+  if(next)next.onclick=()=>{const pages=Math.ceil((state.report||[]).length/50);if(state.reportPage<pages){state.reportPage++;const target=$('#reporttable');target.innerHTML=renderReportRows(state.report);bindReportPagination()}};
+}
+
+async function downloadAttendanceCounts() {
+  if (!window.ExcelJS) {
+    toast('Fitur Excel belum termuat. Periksa koneksi internet lalu coba kembali.');
+    return;
+  }
+
+  const filters = {
+    from: $('#from')?.value || state.data.today,
+    to: $('#to')?.value || state.data.today,
+    grade: $('#rgrade')?.value || '',
+    major: $('#rmajor')?.value || '',
+    className: $('#rclass')?.value || ''
+  };
+  const rangeKey = `${filters.from}|${filters.to}`;
+
+  try {
+    let reportRows = state.reportRangeRows;
+    if (state.reportRangeKey !== rangeKey || !Array.isArray(reportRows)) {
+      reportRows = await call('getReport', state.token, {from: filters.from, to: filters.to});
+      if (state.reportFilters && `${state.reportFilters.from}|${state.reportFilters.to}` === rangeKey) {
+        state.reportRangeRows = reportRows;
+        state.reportRangeKey = rangeKey;
+      }
+    }
+
+    const matchingStudents = state.students.filter(student =>
+      (!filters.grade || String(student.grade) === String(filters.grade)) &&
+      (!filters.major || String(student.major) === String(filters.major)) &&
+      (!filters.className || String(student.className) === String(filters.className))
+    );
+    const statusColumns = [
+      ['Hadir', 'Hadir'],
+      ['Tidak sholat', 'Tidak Sholat'],
+      ['Berhalangan', 'Berhalangan'],
+      ['Tidak Masuk', 'Tidak Masuk'],
+      ['Terlambat', 'Terlambat'],
+      ['Izin', 'Izin'],
+      ['Sakit', 'Sakit'],
+      ['Di luar jadwal', 'Di Luar Jadwal']
+    ];
+    const headers = ['Kelas', 'NISN', 'Nama', 'Tingkat', 'Jurusan', 'Jenis Kelamin', ...statusColumns.map(([, label]) => label), 'Total Catatan'];
+    const countByStudent = new Map();
+    matchingStudents.forEach(student => countByStudent.set(String(student.nisn), Object.fromEntries(statusColumns.map(([status]) => [status, 0]))));
+    reportRows.forEach(row => {
+      const counts = countByStudent.get(String(row.nisn));
+      if (counts && Object.prototype.hasOwnProperty.call(counts, row.status)) counts[row.status]++;
+    });
+    const studentRows = matchingStudents.map(student => {
+      const counts = countByStudent.get(String(student.nisn));
+      const total = statusColumns.reduce((sum, [status]) => sum + counts[status], 0);
+      return [student.className || '', student.nisn, student.name, student.grade || '', student.major || '', genderText(student.gender), ...statusColumns.map(([status]) => counts[status]), total];
+    });
+    const classGroups = new Map();
+    matchingStudents.forEach(student => {
+      const className = student.className || '(Belum ada kelas)';
+      if (!classGroups.has(className)) classGroups.set(className, {students: 0, counts: Object.fromEntries(statusColumns.map(([status]) => [status, 0]))});
+      const group = classGroups.get(className);
+      group.students++;
+      const counts = countByStudent.get(String(student.nisn));
+      statusColumns.forEach(([status]) => group.counts[status] += counts[status]);
+    });
+    const aggregateHeaders = ['Kelas', 'Jumlah Siswa', ...statusColumns.map(([, label]) => label), 'Total Catatan'];
+    const classRows = [...classGroups].sort(([a], [b]) => a.localeCompare(b, 'id')).map(([className, group]) => [className, group.students, ...statusColumns.map(([status]) => group.counts[status]), statusColumns.reduce((sum, [status]) => sum + group.counts[status], 0)]);
+    const allCounts = Object.fromEntries(statusColumns.map(([status]) => [status, 0]));
+    studentRows.forEach((row, index) => statusColumns.forEach(([status], statusIndex) => allCounts[status] += row[6 + statusIndex]));
+    const totalRecords = statusColumns.reduce((sum, [status]) => sum + allCounts[status], 0);
+
+    const workbook = new ExcelJS.Workbook();
+    let tableIndex = 0;
+    const addSheet = (name, columns, rows, widths) => {
+      const sheet = workbook.addWorksheet(name, {views: [{state: 'frozen', ySplit: 1}]});
+      sheet.columns = widths.map(width => ({width}));
+      if (rows.length) {
+        tableIndex++;
+        sheet.addTable({
+          name: `AbsensiTable${tableIndex}`,
+          ref: 'A1',
+          headerRow: true,
+          style: {theme: 'TableStyleMedium2', showRowStripes: true},
+          columns: columns.map(column => ({name: column})),
+          rows
+        });
+      } else {
+        const header = sheet.addRow(columns);
+        header.font = {bold: true, color: {argb: 'FFFFFFFF'}};
+        header.fill = {type: 'pattern', pattern: 'solid', fgColor: {argb: 'FF21577A'}};
+        sheet.autoFilter = {from: 'A1', to: `${String.fromCharCode(64 + columns.length)}1`};
+      }
+      return sheet;
+    };
+    const studentWidths = [14, 16, 32, 10, 18, 17, ...statusColumns.map(() => 15), 16];
+    const summaryRows = [
+      ['Tanggal Mulai', filters.from], ['Tanggal Akhir', filters.to],
+      ['Tingkat', filters.grade || 'Semua'], ['Jurusan', filters.major || 'Semua'],
+      ['Kelas', filters.className || 'Semua'], ['Jumlah Siswa', matchingStudents.length],
+      ['Total Catatan', totalRecords], ...statusColumns.map(([status, label]) => [label, allCounts[status]])
+    ];
+    addSheet('Ringkasan', ['Informasi', 'Nilai'], summaryRows, [24, 28]);
+    addSheet('Rekap Per Siswa', headers, studentRows, studentWidths);
+    addSheet('Ringkasan Kelas', aggregateHeaders, classRows, [20, 16, ...statusColumns.map(() => 15), 16]);
+    addSheet('Rekap Status', ['Status', 'Total Catatan'], statusColumns.map(([status, label]) => [label, allCounts[status]]), [22, 18]);
+
+    const dailyGroups = new Map();
+    const matchingNisns = new Set(matchingStudents.map(student => String(student.nisn)));
+    reportRows.forEach(row => {
+      if (!matchingNisns.has(String(row.nisn))) return;
+      if (!dailyGroups.has(row.date)) dailyGroups.set(row.date, Object.fromEntries(statusColumns.map(([status]) => [status, 0])));
+      const counts = dailyGroups.get(row.date);
+      if (Object.prototype.hasOwnProperty.call(counts, row.status)) counts[row.status]++;
+    });
+    const dailyRows = [];
+    const startDate = new Date(`${filters.from}T00:00:00Z`), endDate = new Date(`${filters.to}T00:00:00Z`);
+    if (!Number.isNaN(startDate.getTime()) && !Number.isNaN(endDate.getTime()) && startDate <= endDate) {
+      for (let date = new Date(startDate); date <= endDate; date.setUTCDate(date.getUTCDate() + 1)) {
+        const isoDate = date.toISOString().slice(0, 10);
+        const counts = dailyGroups.get(isoDate) || Object.fromEntries(statusColumns.map(([status]) => [status, 0]));
+        dailyRows.push([isoDate, ...statusColumns.map(([status]) => counts[status]), statusColumns.reduce((sum, [status]) => sum + counts[status], 0)]);
+      }
+    }
+    addSheet('Rekap Harian', ['Tanggal', ...statusColumns.map(([, label]) => label), 'Total Catatan'], dailyRows, [16, ...statusColumns.map(() => 15), 16]);
+
+    const usedNames = new Set(workbook.worksheets.map(sheet => sheet.name.toLowerCase()));
+    const safeSheetName = value => {
+      const base = String(value || 'Tanpa Kelas').replace(/[:\\/?*\[\]]/g, ' ').trim().replace(/^'+|'+$/g, '').slice(0, 31) || 'Tanpa Kelas';
+      let name = base, suffix = 2;
+      while (usedNames.has(name.toLowerCase())) {
+        const ending = ` (${suffix++})`;
+        name = `${base.slice(0, 31 - ending.length)}${ending}`;
+      }
+      usedNames.add(name.toLowerCase());
+      return name;
+    };
+    [...classGroups.keys()].sort((a, b) => a.localeCompare(b, 'id')).forEach(className => {
+      const rows = matchingStudents.filter(student => (student.className || '(Belum ada kelas)') === className).map(student => {
+        const counts = countByStudent.get(String(student.nisn));
+        const total = statusColumns.reduce((sum, [status]) => sum + counts[status], 0);
+        return [className, student.nisn, student.name, student.grade || '', student.major || '', genderText(student.gender), ...statusColumns.map(([status]) => counts[status]), total];
+      });
+      addSheet(safeSheetName(className), headers, rows, studentWidths);
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([buffer], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `hitung-absensi-${filters.from}-sd-${filters.to}.xlsx`;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    fail(error);
+  }
 }
 
 function downloadReport() {
