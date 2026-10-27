@@ -310,6 +310,38 @@ function deleteStudents(token, nisns) {
   }
 }
 
+function updateStudentsBulk(token, nisns, updates) {
+  auth_(token);
+  if (!Array.isArray(nisns) || !nisns.length) throw new Error('Pilih setidaknya satu siswa.');
+  updates = updates || {};
+  const grade = String(updates.grade || '').trim().toUpperCase();
+  const major = String(updates.major || '').trim();
+  const className = String(updates.className || '').trim();
+  if (!['X', 'XI', 'XII'].includes(grade) || !major || !className) {
+    throw new Error('Tingkat, jurusan, dan kelas wajib diisi.');
+  }
+  const targets = new Set(nisns.map(String));
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const sh = sheet_(APP.SHEETS.STUDENTS), all = rows_(APP.SHEETS.STUDENTS);
+    let count = 0;
+    const values = all.map(student => {
+      if (targets.has(String(student.nisn)) && String(student.active) !== 'false') {
+        student.grade = grade;
+        student.major = major;
+        student.className = className;
+        count++;
+      }
+      return [student.nisn, student.name, student.grade, student.major, student.className, student.active, student.createdAt, student.gender];
+    });
+    if (values.length) sh.getRange(2, 1, values.length, 8).setValues(values);
+    return count;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function saveTeacher(token, data) {
   requireAdmin_(token);
   data = data || {};
@@ -429,6 +461,7 @@ function saveSettings(token, values) {
 
 function recordAttendance(token, nisn) {
   const actor = auth_(token);
+  assertAttendanceDay_();
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
@@ -461,6 +494,7 @@ function recordAttendance(token, nisn) {
 
 function recordAttendanceBulk(token, nisns) {
   const actor = auth_(token);
+  assertAttendanceDay_();
   if (!Array.isArray(nisns) || !nisns.length) throw new Error('Pilih setidaknya satu siswa yang hadir.');
   const allowedStatuses = ['Hadir', 'Terlambat', 'Sakit', 'Izin', 'Tidak sholat', 'Di luar jadwal', 'Tidak Masuk', 'Berhalangan'];
   const requested = new Map();
@@ -502,6 +536,7 @@ function recordAttendanceBulk(token, nisns) {
 
 function setStudentStatus(token, nisn, status, note) {
   const actor = auth_(token);
+  assertAttendanceDay_();
   if (!['Terlambat','Sakit','Izin','Tidak sholat','Di luar jadwal','Tidak Masuk','Berhalangan'].includes(status)) throw new Error('Status tidak valid.');
   const student = rows_(APP.SHEETS.STUDENTS).find(r => String(r.nisn) === String(nisn) && String(r.active) !== 'false');
   if (!student) throw new Error('Siswa tidak ditemukan.');
@@ -574,12 +609,13 @@ function getReport(token, filters) {
   auth_(token);
   filters = filters || {};
   const from = filters.from || today_(), to = filters.to || today_();
+  if (from > to) throw new Error('Rentang tanggal tidak valid.');
   const students = rows_(APP.SHEETS.STUDENTS)
     .filter(row => String(row.active) !== 'false');
   const studentsByNisn = new Map(students.map(student => [String(student.nisn), student]));
   const recordsByDateAndStudent = new Map();
   rows_(APP.SHEETS.ATTENDANCE)
-    .filter(row => row.date >= from && row.date <= to)
+    .filter(row => row.date >= from && row.date <= to && isAttendanceDay_(row.date))
     .forEach(row => {
       const student = studentsByNisn.get(String(row.nisn));
       recordsByDateAndStudent.set(row.date + '|' + row.nisn, {
@@ -605,6 +641,7 @@ function getReport(token, filters) {
     }
 
     if (from === to) {
+      if (!isAttendanceDay_(from)) return [];
       return [{
         date: from,
         nisn: student.nisn,
@@ -759,6 +796,7 @@ function autoCloseAttendanceForToday() {
 function closeAttendanceIfDue_() {
   const endTime = '13:00';
   const date = today_();
+  if (!isAttendanceDay_(date)) return 0;
   const cache = CacheService.getScriptCache();
   const cacheKey = 'attendance_closed_' + date;
   if (Utilities.formatDate(new Date(), 'Asia/Jakarta', 'HH:mm') < endTime || cache.get(cacheKey)) return 0;
@@ -789,4 +827,15 @@ function closeAttendanceIfDue_() {
 
 function today_() {
   return Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM-dd');
+}
+
+function isAttendanceDay_(date) {
+  const weekday = new Date(String(date) + 'T00:00:00Z').getUTCDay();
+  return weekday !== 0 && weekday !== 6;
+}
+
+function assertAttendanceDay_() {
+  if (!isAttendanceDay_(today_())) {
+    throw new Error('Absensi hanya dapat dicatat pada hari Senin sampai Jumat.');
+  }
 }

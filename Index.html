@@ -11,6 +11,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js">
 </script>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
 :root {
   --ink:#17231f;
@@ -298,7 +299,7 @@ input[type=date] {
   overflow-y:auto;
   overscroll-behavior:contain
 }
-.pending-scroll { max-height:780px; overflow-y:auto; overscroll-behavior:contain }
+.pending-scroll { max-height:980px; overflow-y:auto; overscroll-behavior:contain }
 .check-row {
   display:flex;
   align-items:center;
@@ -652,7 +653,7 @@ tr:last-child td {
 <div id="app">
 </div>
 <div id="loadingoverlay" class="loading-overlay" role="status" aria-live="polite" hidden>
-<div class="loading-card"><span class="loading-spinner" aria-hidden="true"></span><span>Sedang memproses data…</span></div>
+<div class="loading-card"><span class="loading-spinner" aria-hidden="true"></span><span id="loadingmessage">Sedang memproses data…</span></div>
 </div>
 <script>
 const $ = selector => document.querySelector(selector);
@@ -687,13 +688,25 @@ let state = {
 
 const SUBMISSION_CALLS = new Set([
   'bootstrapAdmin','login','logout','saveSettings','saveProfile','recordAttendanceBulk',
-  'updateAttendanceStatusBulk','deleteAttendanceRecords','importStudents','deleteStudents','importTeachers',
+  'updateAttendanceStatusBulk','deleteAttendanceRecords','importStudents','deleteStudents','updateStudentsBulk','importTeachers',
   'recordAttendance','setStudentStatus','saveStudent','saveTeacher','updateTeacher','deleteTeacher','setTeacherActive','deleteStudent'
+]);
+const ATTENDANCE_SUBMISSION_CALLS = new Set([
+  'recordAttendanceBulk','updateAttendanceStatusBulk','deleteAttendanceRecords','recordAttendance','setStudentStatus'
 ]);
 let activeSubmissions=0, submissionTimer=null;
 
-function startSubmission() {
+function showLoading(message) {
+  const label=$('#loadingmessage');
+  const overlay=$('#loadingoverlay');
+  if(label)label.textContent=message;
+  if(overlay)overlay.hidden=false;
+}
+
+function startSubmission(message='Sedang memproses data…') {
   activeSubmissions++;
+  const label=$('#loadingmessage');
+  if(label)label.textContent=message;
   if(activeSubmissions===1)submissionTimer=setTimeout(()=>{
     const overlay=$('#loadingoverlay');
     if(overlay)overlay.hidden=false;
@@ -712,7 +725,9 @@ function finishSubmission() {
 
 function call(name, ...args) {
   const isSubmission=SUBMISSION_CALLS.has(name);
-  if(isSubmission)startSubmission();
+  if(isSubmission)startSubmission(ATTENDANCE_SUBMISSION_CALLS.has(name)
+    ?'Sedang menyimpan data absensi'
+    :'Sedang memproses data…');
   return new Promise((resolve, reject) => {
     try {
       google.script.run
@@ -775,7 +790,7 @@ async function init() {
     } else if (state.token) {
       sessionStorage.removeItem('token');
       state.token = '';
-      init();
+      return init();
     } else {
       try {
         const status = await call('getSetupState');
@@ -823,14 +838,26 @@ function renderLogin(bootstrap=false) {
 </div>
 </div>`;
   $('#loginbtn').onclick=async()=> {
+    const button=$('#loginbtn');
+    const originalLabel=button.textContent;
+    button.disabled=true;
+    button.textContent=bootstrap?'Membuat akun…':'Memproses login…';
+    startSubmission();
     try {
       const res=bootstrap?await call('bootstrapAdmin',$('#lname').value,$('#username').value,$('#password').value):await call('login',$('#username').value,$('#password').value);
       state.token=res.token;
       sessionStorage.setItem('token',state.token);
-      init()
-          } catch(e) {
-      toast(e.message)
-          }
+      showLoading('Sedang memuat halaman dashboard…');
+      await init();
+    } catch(e) {
+      toast(e.message);
+    } finally {
+      finishSubmission();
+      if(button.isConnected) {
+        button.disabled=false;
+        button.textContent=originalLabel;
+      }
+    }
   }
 }
 
@@ -995,8 +1022,8 @@ function renderView() {
     $('#captureqr').onclick=()=>$('#captureqrfile').click();
     $('#captureqrfile').onchange=scanQRPhoto;
     $('#manualadd').onclick=()=>scan($('#manualnisn').value)
-    $('#pendingsearch').oninput=()=>{state.pendingPage=1;drawPending()};
-    ;['attendanceMajor','attendanceClass'].forEach(id=>$('#'+id).onchange=()=>{state.pendingPage=1;drawPending()});
+    $('#pendingsearch').oninput=drawPending;
+    ;['attendanceMajor','attendanceClass'].forEach(id=>$('#'+id).onchange=drawPending);
     $('#savebulk').onclick=saveBulkAttendance;
     $('#todaysearch').oninput=()=>{
       $('#todayrecords').innerHTML=drawTodayRecords();
@@ -1026,7 +1053,7 @@ function renderView() {
 <select class="input" id="majorfilter">
 <option value="">Semua jurusan</option>${options(d.students.map(x=>x.major))}</select>
 <select class="input" id="classfilter"><option value="">Semua kelas</option>${options(d.students.map(x=>x.className))}</select>
-<span class="sub" id="selectioncount">0 siswa dipilih</span>${d.user.role==='admin'?'<button class="btn danger small" id="bulkdelete" disabled>Nonaktifkan dipilih</button>':''}</div>
+<span class="sub" id="selectioncount">0 siswa dipilih</span><button class="btn secondary small" id="bulkedit" disabled>Edit data dipilih</button>${d.user.role==='admin'?'<button class="btn danger small" id="bulkdelete" disabled>Nonaktifkan dipilih</button>':''}</div>
 <div id="studenttable">
 </div>
 </div>`;
@@ -1034,6 +1061,7 @@ function renderView() {
     $('#gradefilter').onchange=drawStudents;
     $('#majorfilter').onchange=drawStudents;
     $('#classfilter').onchange=drawStudents;
+    $('#bulkedit').onclick=bulkEditStudents;
     if(d.user.role==='admin') {
       $('#templatebtn').onclick=downloadStudentTemplate;
       $('#uploadbtn').onclick=()=>$('#studentfile').click();
@@ -1059,6 +1087,7 @@ function renderView() {
 <div class="toolbar">
 <input class="input" type="date" id="from" value="${d.today}">
 <input class="input" type="date" id="to" value="${d.today}">
+<input class="input" id="rsearch" placeholder="Cari nama / NISN siswa">
 <select id="rgrade">
 <option value="">Semua tingkat</option>
 <option>X</option>
@@ -1079,6 +1108,7 @@ function renderView() {
 </div>
 </div>`;
     ['from','to','rgrade','rmajor','rclass','rstatus'].forEach(id=>$('#'+id).onchange=()=>{state.reportPage=1;loadReport()});
+    $('#rsearch').oninput=()=>{state.reportPage=1;loadReport()};
     $('#download').onclick=downloadReport;
     $('#downloadcount').onclick=downloadAttendanceCounts;
     loadReport();
@@ -1171,7 +1201,7 @@ function renderView() {
           </div>
           <div class="field">
             <label for="profilename">NAMA PENGGUNA</label>
-            <input class="input" id="profilename" value="${esc(d.user.name)}" autocomplete="name">
+            <input class="input" id="profilename" value="${esc(d.user.name)}" autocomplete="name" disabled>
           </div>
           <div class="field" style="margin-top:12px">
             <label for="profileusername">USERNAME</label>
@@ -1343,13 +1373,7 @@ function pendingList(rows) {
 function drawPending() {
   const d=state.data,q=($('#pendingsearch')?.value||'').toLowerCase(),major=$('#attendanceMajor')?.value||'',className=$('#attendanceClass')?.value||'',rows=d.students.filter(s=>!d.attendance.some(a=>String(a.nisn)===String(s.nisn))&&(`${s.name} ${s.nisn} ${s.className} ${s.major}`).toLowerCase().includes(q)&&(!major||s.major===major)&&(!className||s.className===className));
   if($('#pendinglist')) {
-    const pageSize=16,totalPages=Math.max(1,Math.ceil(rows.length/pageSize));
-    state.pendingPage=Math.min(Math.max(1,state.pendingPage||1),totalPages);
-    const start=(state.pendingPage-1)*pageSize,pageRows=rows.slice(start,start+pageSize);
-    $('#pendinglist').innerHTML=rows.length?`<div><div class="check-row check-header"><span aria-hidden="true" style="width:17px"></span><span style="flex:1">Siswa</span><span>Status</span></div>${pageRows.map(s=>`<div class="check-row"><input type="checkbox" class="attendancecheck" aria-label="Pilih ${esc(s.name)} untuk disimpan" value="${esc(s.nisn)}" ${state.attendanceSelected.has(String(s.nisn))?'checked':''}><span style="flex:1;min-width:0"><b>${esc(s.name)}</b><div class="sub">${esc(genderText(s.gender))} · ${esc(s.grade)} · ${esc(s.className)} · ${esc(s.major)} · ${esc(s.nisn)}</div></span><select class="attendance-status input" aria-label="Status ${esc(s.name)}" data-nisn="${esc(s.nisn)}">${ATTENDANCE_STATUS_OPTIONS.map(status=>`<option value="${esc(status.value)}" ${((state.attendanceStatuses.get(String(s.nisn))||'Hadir')===status.value)?'selected':''}>${esc(status.label)}</option>`).join('')}</select></div>`).join('')}</div><div class="toolbar" style="justify-content:space-between;margin:10px 0 0"><span class="sub">Menampilkan ${start+1}–${Math.min(start+pageSize,rows.length)} dari ${rows.length} siswa</span><div class="toolbar" style="margin:0"><button class="btn secondary small" id="pendingPrev" ${state.pendingPage<=1?'disabled':''}>Sebelumnya</button><span class="sub">Halaman ${state.pendingPage} dari ${totalPages}</span><button class="btn secondary small" id="pendingNext" ${state.pendingPage>=totalPages?'disabled':''}>Berikutnya</button></div></div>`:'<div class="empty">Semua siswa pada filter ini sudah memiliki catatan.</div>';
-    const prev=$('#pendingPrev'),next=$('#pendingNext');
-    if(prev)prev.onclick=()=>{state.pendingPage--;drawPending()};
-    if(next)next.onclick=()=>{state.pendingPage++;drawPending()};
+    $('#pendinglist').innerHTML=rows.length?`<div class="pending-scroll"><div class="check-row check-header"><span aria-hidden="true" style="width:17px"></span><span style="flex:1">Siswa</span><span>Status</span></div>${rows.map(s=>`<div class="check-row"><input type="checkbox" class="attendancecheck" aria-label="Pilih ${esc(s.name)} untuk disimpan" value="${esc(s.nisn)}" ${state.attendanceSelected.has(String(s.nisn))?'checked':''}><span style="flex:1;min-width:0"><b>${esc(s.name)}</b><div class="sub">${esc(genderText(s.gender))} · ${esc(s.grade)} · ${esc(s.className)} · ${esc(s.major)} · ${esc(s.nisn)}</div></span><select class="attendance-status input" aria-label="Status ${esc(s.name)}" data-nisn="${esc(s.nisn)}">${ATTENDANCE_STATUS_OPTIONS.map(status=>`<option value="${esc(status.value)}" ${((state.attendanceStatuses.get(String(s.nisn))||'Hadir')===status.value)?'selected':''}>${esc(status.label)}</option>`).join('')}</select></div>`).join('')}</div>`:'<div class="empty">Semua siswa pada filter ini sudah memiliki catatan.</div>';
     document.querySelectorAll('.attendancecheck').forEach(input=>input.onchange=()=>{input.checked?state.attendanceSelected.add(input.value):state.attendanceSelected.delete(input.value);updateBulkSelection()});
     document.querySelectorAll('.attendance-status').forEach(select=>select.onchange=()=>state.attendanceStatuses.set(select.dataset.nisn,select.value));
     $('#pendingcount').textContent=`${rows.length} siswa`;
@@ -1502,27 +1526,56 @@ function drawStudents() {
     (!grade || student.grade === grade) &&
     (!major || student.major === major) && (!className || student.className === className)
   );
-  $('#studenttable').innerHTML=table(rows,state.data.user.role==='admin',false,state.data.user.role==='admin');
-  if(state.data.user.role==='admin') {
-    const all=$('#selectvisible');
-    if(all)all.onchange=()=> {
-      rows.forEach(s=>all.checked?state.selectedStudents.add(String(s.nisn)):state.selectedStudents.delete(String(s.nisn)));
-      drawStudents()
-          }
-    ;
-    document.querySelectorAll('.studentcheck').forEach(c=>c.onchange=()=> {
-      c.checked?state.selectedStudents.add(c.value):state.selectedStudents.delete(c.value);updateStudentSelection()
-          }
-    );
-    updateStudentSelection()
-      }
+  $('#studenttable').innerHTML=table(rows,state.data.user.role==='admin',false,true);
+  const all=$('#selectvisible');
+  if(all)all.onchange=()=> {
+    rows.forEach(s=>all.checked?state.selectedStudents.add(String(s.nisn)):state.selectedStudents.delete(String(s.nisn)));
+    drawStudents()
+  };
+  document.querySelectorAll('.studentcheck').forEach(c=>c.onchange=()=> {
+    c.checked?state.selectedStudents.add(c.value):state.selectedStudents.delete(c.value);updateStudentSelection()
+  });
+  updateStudentSelection();
 }
 
 function updateStudentSelection() {
-  const count=$('#selectioncount'),button=$('#bulkdelete');
+  const count=$('#selectioncount'),button=$('#bulkdelete'),editButton=$('#bulkedit');
   if(count)count.textContent=`${state.selectedStudents.size} siswa dipilih`;
-  if(button)button.disabled=!state.selectedStudents.size
+  if(button)button.disabled=!state.selectedStudents.size;
+  if(editButton)editButton.disabled=!state.selectedStudents.size
   }
+
+function bulkEditStudents() {
+  const ids=[...state.selectedStudents];
+  if(!ids.length)return;
+  const selected=state.students.filter(student=>ids.includes(String(student.nisn)));
+  const grades=new Set(selected.map(student=>student.grade));
+  const majors=new Set(selected.map(student=>student.major));
+  const classes=new Set(selected.map(student=>student.className));
+  const grade=grades.size===1?[...grades][0]:'';
+  const major=majors.size===1?[...majors][0]:'';
+  const className=classes.size===1?[...classes][0]:'';
+  openModal(`<h2>Edit data ${ids.length} siswa</h2>
+<p class="sub">Nilai yang disimpan akan diterapkan ke seluruh siswa terpilih.</p>
+<div class="field" style="margin-top:14px"><label for="bulkgrade">TINGKAT</label><select class="input" id="bulkgrade"><option value="">Pilih tingkat</option><option ${grade==='X'?'selected':''}>X</option><option ${grade==='XI'?'selected':''}>XI</option><option ${grade==='XII'?'selected':''}>XII</option></select></div>
+<div class="field" style="margin-top:12px"><label for="bulkmajor">JURUSAN</label><input class="input" id="bulkmajor" value="${esc(major)}" placeholder="Contoh: RPL"></div>
+<div class="field" style="margin-top:12px"><label for="bulkclass">KELAS</label><input class="input" id="bulkclass" value="${esc(className)}" placeholder="Contoh: XI RPL 1"></div>
+<div class="actions"><button class="btn secondary" onclick="closeModal()">Batal</button><button class="btn" id="savebulkstudent">Simpan perubahan</button></div>`);
+  $('#savebulkstudent').onclick=async()=>{
+    const button=$('#savebulkstudent');
+    button.disabled=true;
+    try {
+      const count=await call('updateStudentsBulk',state.token,ids,{grade:$('#bulkgrade').value,major:$('#bulkmajor').value,className:$('#bulkclass').value});
+      closeModal();
+      state.selectedStudents.clear();
+      await refresh();
+      toast(`${count} data siswa berhasil diperbarui.`);
+    } catch(error) {
+      button.disabled=false;
+      fail(error);
+    }
+  };
+}
 
 function downloadStudentTemplate() {
   const csv='NISN,Nama,Tingkat,Jurusan,Kelas,Jenis Kelamin\r\n0012345678,Contoh Nama Siswa,X,RPL,X RPL 1,L\r\n';
@@ -1913,6 +1966,7 @@ async function loadReport(backgroundRefresh = false) {
       grade: $('#rgrade').value,
       major: $('#rmajor').value,
       className: $('#rclass').value,
+      search: ($('#rsearch').value || '').trim().toLowerCase(),
       status: $('#rstatus').value
     };
   }
@@ -1930,7 +1984,7 @@ async function loadReport(backgroundRefresh = false) {
       state.reportRangeRows=rangeRows;
       state.reportRangeKey=rangeKey;
     }
-    const rows=state.reportRangeRows.filter(row=>(!filters.grade||String(row.grade)===String(filters.grade))&&(!filters.major||String(row.major)===String(filters.major))&&(!filters.className||String(row.className)===String(filters.className))&&(!filters.status||row.status===filters.status));
+    const rows=state.reportRangeRows.filter(row=>(!filters.grade||String(row.grade)===String(filters.grade))&&(!filters.major||String(row.major)===String(filters.major))&&(!filters.className||String(row.className)===String(filters.className))&&(!filters.search||`${row.studentName} ${row.nisn}`.toLowerCase().includes(filters.search))&&(!filters.status||row.status===filters.status));
     const currentTarget=$('#reporttable');
     if(state.tab!=='reports'||!currentTarget||JSON.stringify(filters)!==JSON.stringify(state.reportFilters))return;
     state.report=rows;
@@ -2039,8 +2093,8 @@ function bindReportPagination() {
 }
 
 async function downloadAttendanceCounts() {
-  if (!window.ExcelJS) {
-    toast('Fitur Excel belum termuat. Periksa koneksi internet lalu coba kembali.');
+  if (!window.ExcelJS || !window.Chart) {
+    toast('Pustaka Excel atau grafik belum termuat. Periksa koneksi internet lalu coba kembali.');
     return;
   }
 
@@ -2052,6 +2106,11 @@ async function downloadAttendanceCounts() {
     className: $('#rclass')?.value || ''
   };
   const rangeKey = `${filters.from}|${filters.to}`;
+  const downloadButton = $('#downloadcount');
+  if (downloadButton) {
+    downloadButton.disabled = true;
+    downloadButton.textContent = 'Menyiapkan Excel…';
+  }
 
   try {
     let reportRows = state.reportRangeRows;
@@ -2066,7 +2125,8 @@ async function downloadAttendanceCounts() {
     const matchingStudents = state.students.filter(student =>
       (!filters.grade || String(student.grade) === String(filters.grade)) &&
       (!filters.major || String(student.major) === String(filters.major)) &&
-      (!filters.className || String(student.className) === String(filters.className))
+      (!filters.className || String(student.className) === String(filters.className)) &&
+      (!($('#rsearch')?.value || '').trim() || `${student.name} ${student.nisn}`.toLowerCase().includes(($('#rsearch').value || '').trim().toLowerCase()))
     );
     const statusColumns = [
       ['Hadir', 'Hadir'],
@@ -2104,8 +2164,371 @@ async function downloadAttendanceCounts() {
     const allCounts = Object.fromEntries(statusColumns.map(([status]) => [status, 0]));
     studentRows.forEach((row, index) => statusColumns.forEach(([status], statusIndex) => allCounts[status] += row[6 + statusIndex]));
     const totalRecords = statusColumns.reduce((sum, [status]) => sum + allCounts[status], 0);
+    const dailyGroups = new Map();
+    const matchingNisns = new Set(matchingStudents.map(student => String(student.nisn)));
+    reportRows.forEach(row => {
+      if (!matchingNisns.has(String(row.nisn))) return;
+      if (row.status === 'Belum absen') return;
+      if (!dailyGroups.has(row.date)) dailyGroups.set(row.date, Object.fromEntries(statusColumns.map(([status]) => [status, 0])));
+      const counts = dailyGroups.get(row.date);
+      if (Object.prototype.hasOwnProperty.call(counts, row.status)) counts[row.status]++;
+    });
+    const dailyRows = [];
+    const startDate = new Date(`${filters.from}T00:00:00Z`), endDate = new Date(`${filters.to}T00:00:00Z`);
+    if (!Number.isNaN(startDate.getTime()) && !Number.isNaN(endDate.getTime()) && startDate <= endDate) {
+      for (let date = new Date(startDate); date <= endDate; date.setUTCDate(date.getUTCDate() + 1)) {
+        const isoDate = date.toISOString().slice(0, 10);
+        const counts = dailyGroups.get(isoDate) || Object.fromEntries(statusColumns.map(([status]) => [status, 0]));
+        dailyRows.push([isoDate, ...statusColumns.map(([status]) => counts[status]), statusColumns.reduce((sum, [status]) => sum + counts[status], 0)]);
+      }
+    }
+    const sessionDates = [...dailyGroups.keys()].sort();
+    const classPresentByDate = new Map();
+    const studentByNisn = new Map(matchingStudents.map(student => [String(student.nisn), student]));
+    reportRows.forEach(row => {
+      if (row.status === 'Belum absen' || !['Hadir', 'Terlambat'].includes(row.status)) return;
+      const student = studentByNisn.get(String(row.nisn));
+      if (!student) return;
+      const className = student.className || '(Belum ada kelas)';
+      if (!classPresentByDate.has(row.date)) classPresentByDate.set(row.date, new Map());
+      const byClass = classPresentByDate.get(row.date);
+      byClass.set(className, (byClass.get(className) || 0) + 1);
+    });
+    const classAttendanceRows = [...classGroups].map(([className, group]) => {
+      const present = group.counts.Hadir + group.counts.Terlambat;
+      const eligible = group.students * sessionDates.length;
+      return {className, students: group.students, present, eligible, rate: eligible ? present / eligible : null};
+    }).sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1) || a.className.localeCompare(b.className, 'id'));
+    const distributionRows = matchingStudents.map(student => {
+      const counts = countByStudent.get(String(student.nisn));
+      const present = counts.Hadir + counts.Terlambat;
+      const rate = sessionDates.length ? present / sessionDates.length : null;
+      const band = rate === null ? 'Belum ada sesi' : rate <= 0.2 ? '≤20%' : rate <= 0.4 ? '>20–40%' : rate <= 0.6 ? '>40–60%' : rate <= 0.8 ? '>60–80%' : '>80–100%';
+      return {student, present, rate, band, row: [student.className || '', student.nisn, student.name, present, sessionDates.length, rate ?? '', band]};
+    });
+    const distributionBands = ['≤20%', '>20–40%', '>40–60%', '>60–80%', '>80–100%', 'Belum ada sesi'];
+    const distributionHistogram = distributionBands.map(band => distributionRows.filter(item => item.band === band).length);
+    const compositionRows = [...classGroups].map(([className, group]) => {
+      const present = group.counts.Hadir + group.counts.Terlambat;
+      const excused = group.counts.Izin;
+      const sick = group.counts.Sakit;
+      const alpa = group.counts['Tidak Masuk'];
+      const other = group.counts['Tidak sholat'] + group.counts.Berhalangan + group.counts['Di luar jadwal'];
+      const total = present + excused + sick + alpa + other;
+      return {className, present, excused, sick, alpa, other, total};
+    });
+    const sessionPeriodMap = new Map();
+    const rangeDays = (endDate - startDate) / 86400000;
+    const trendInterval = rangeDays <= 180 ? 'week' : 'month';
+    sessionDates.forEach(dateText => {
+      const date = new Date(`${dateText}T00:00:00Z`);
+      let key, label;
+      if (trendInterval === 'week') {
+        date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+        key = date.toISOString().slice(0, 10);
+        label = `Minggu ${key}`;
+      } else {
+        key = dateText.slice(0, 7);
+        label = key;
+      }
+      if (!sessionPeriodMap.has(key)) sessionPeriodMap.set(key, {label, sessions: 0});
+      sessionPeriodMap.get(key).sessions++;
+    });
+    const trendPeriods = [...sessionPeriodMap.entries()].map(([key, value]) => ({key, ...value}));
+    const classNames = [...classGroups.keys()];
+    const gradeNames = [...new Set(matchingStudents.map(student => student.grade || '(Tanpa tingkat)'))];
+    const majorNames = [...new Set(matchingStudents.map(student => student.major || '(Tanpa jurusan)'))];
+    const trendByClass = classNames.length <= 8;
+    const trendDimension = trendByClass ? 'kelas' : gradeNames.length <= majorNames.length ? 'tingkat' : 'jurusan';
+    const trendGroups = new Map();
+    const trendKeyForStudent = student => trendDimension === 'kelas'
+      ? student.className || '(Belum ada kelas)'
+      : trendDimension === 'tingkat' ? student.grade || '(Tanpa tingkat)' : student.major || '(Tanpa jurusan)';
+    matchingStudents.forEach(student => {
+      const key = trendKeyForStudent(student);
+      if (!trendGroups.has(key)) trendGroups.set(key, {students: 0, presentByPeriod: new Map()});
+      trendGroups.get(key).students++;
+    });
+    reportRows.forEach(row => {
+      if (row.status === 'Belum absen' || !['Hadir', 'Terlambat'].includes(row.status)) return;
+      const student = studentByNisn.get(String(row.nisn));
+      if (!student) return;
+      const date = new Date(`${row.date}T00:00:00Z`);
+      if (trendInterval === 'week') date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+      const periodKey = trendInterval === 'week' ? date.toISOString().slice(0, 10) : row.date.slice(0, 7);
+      const group = trendGroups.get(trendKeyForStudent(student));
+      if (group) group.presentByPeriod.set(periodKey, (group.presentByPeriod.get(periodKey) || 0) + 1);
+    });
+    const trendDatasets = [...trendGroups.entries()].sort(([a], [b]) => a.localeCompare(b, 'id')).map(([label, group], index) => ({
+      label,
+      data: trendPeriods.map(period => period.sessions ? (group.presentByPeriod.get(period.key) || 0) / (group.students * period.sessions) : null),
+      borderColor: ['#176b52', '#d58a32', '#607dca', '#a95c9a', '#45a3a0', '#d55858', '#809549', '#64748b'][index % 8],
+      backgroundColor: 'transparent',
+      tension: 0.25,
+      spanGaps: false
+    }));
+    const heatmapWeekdayNames = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    const heatmapByDate = sessionDates.length <= 31;
+    const heatmapLabels = heatmapByDate ? sessionDates : heatmapWeekdayNames;
+    const heatmapWeekdaySessions = Array(7).fill(0);
+    const heatmapWeekdayPresent = new Map([...classGroups.keys()].map(className => [className, Array(7).fill(0)]));
+    sessionDates.forEach(dateText => heatmapWeekdaySessions[new Date(`${dateText}T00:00:00Z`).getUTCDay()]++);
+    classPresentByDate.forEach((byClass, dateText) => {
+      const weekday = new Date(`${dateText}T00:00:00Z`).getUTCDay();
+      byClass.forEach((count, className) => {
+        const totals = heatmapWeekdayPresent.get(className);
+        if (totals) totals[weekday] += count;
+      });
+    });
+    const heatmapCellValue = (className, label) => {
+      const group = classGroups.get(className);
+      if (!group || !sessionDates.length) return null;
+      if (heatmapByDate) return (classPresentByDate.get(label)?.get(className) || 0) / group.students;
+      const weekday = heatmapWeekdayNames.indexOf(label), sessions = heatmapWeekdaySessions[weekday];
+      return sessions ? heatmapWeekdayPresent.get(className)[weekday] / (group.students * sessions) : null;
+    };
 
     const workbook = new ExcelJS.Workbook();
+    const analysisSheet = workbook.addWorksheet('Analisa Data', {views: [{showGridLines: false}]});
+    analysisSheet.columns = Array.from({length: 16}, () => ({width: 12}));
+    analysisSheet.mergeCells('A1:P1');
+    analysisSheet.getCell('A1').value = 'ANALISA DATA ABSENSI SHOLAT DZUHUR';
+    analysisSheet.getCell('A1').font = {name: 'Aptos Display', size: 18, bold: true, color: {argb: 'FFFFFFFF'}};
+    analysisSheet.getCell('A1').fill = {type: 'pattern', pattern: 'solid', fgColor: {argb: 'FF21577A'}};
+    analysisSheet.getCell('A1').alignment = {vertical: 'middle'};
+    analysisSheet.getRow(1).height = 34;
+    analysisSheet.mergeCells('A2:P2');
+    analysisSheet.getCell('A2').value = `Periode ${filters.from} sampai ${filters.to} · dibuat ${new Date().toLocaleDateString('id-ID')}`;
+    analysisSheet.getCell('A2').font = {size: 11, color: {argb: 'FF52616B'}};
+
+    const kpis = [
+      {range: 'A4:D4', valueRange: 'A5:D6', label: 'TOTAL CATATAN', value: totalRecords},
+      {range: 'E4:H4', valueRange: 'E5:H6', label: 'JUMLAH SISWA', value: matchingStudents.length},
+      {range: 'I4:L4', valueRange: 'I5:L6', label: 'HARI ABSENSI', value: sessionDates.length},
+      {range: 'M4:P4', valueRange: 'M5:P6', label: 'TARGET KEHADIRAN', value: '90%'}
+    ];
+    kpis.forEach(kpi => {
+      analysisSheet.mergeCells(kpi.range);
+      analysisSheet.mergeCells(kpi.valueRange);
+      const labelCell = analysisSheet.getCell(kpi.range.split(':')[0]);
+      labelCell.value = kpi.label;
+      labelCell.font = {bold: true, size: 10, color: {argb: 'FF52616B'}};
+      labelCell.alignment = {horizontal: 'center', vertical: 'middle'};
+      labelCell.fill = {type: 'pattern', pattern: 'solid', fgColor: {argb: 'FFEAF1F5'}};
+      const valueCell = analysisSheet.getCell(kpi.valueRange.split(':')[0]);
+      valueCell.value = kpi.value;
+      valueCell.font = {bold: true, size: 18, color: {argb: 'FF21577A'}};
+      valueCell.alignment = {horizontal: 'center', vertical: 'middle', wrapText: true};
+      valueCell.fill = {type: 'pattern', pattern: 'solid', fgColor: {argb: 'FFF5F8FA'}};
+    });
+    analysisSheet.getRow(4).height = 23;
+    analysisSheet.getRow(5).height = 25;
+    analysisSheet.getRow(6).height = 22;
+
+    const chartHost = document.createElement('div');
+    chartHost.style.cssText = 'position:fixed;left:-12000px;top:0;width:1200px;height:800px;';
+    document.body.appendChild(chartHost);
+    const chartInstances = [];
+    const makeChartImage = (title, config, extraPlugins = [], height = 540) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1200;
+      canvas.height = height;
+      chartHost.appendChild(canvas);
+      const chartOptions = config.options || {};
+      const chart = new Chart(canvas, {
+        ...config,
+        options: {
+          ...chartOptions,
+          responsive: false,
+          animation: false,
+          maintainAspectRatio: false,
+          plugins: {
+            ...chartOptions.plugins,
+            title: {display: true, text: title, color: '#17231f', font: {size: 22, weight: 'bold'}, padding: {bottom: 20}},
+            legend: chartOptions.plugins?.legend || {position: 'bottom', labels: {font: {size: 14}, padding: 18}}
+          }
+        },
+        plugins: [...extraPlugins, {
+          id: 'whiteBackground',
+          beforeDraw(instance) {
+            const context = instance.ctx;
+            context.save();
+            context.globalCompositeOperation = 'destination-over';
+            context.fillStyle = '#ffffff';
+            context.fillRect(0, 0, instance.width, instance.height);
+            context.restore();
+          }
+        }]
+      });
+      chartInstances.push(chart);
+      return chart.toBase64Image();
+    };
+    const excelColumnName = columnNumber => {
+      let name = '';
+      while (columnNumber) {
+        const remainder = (columnNumber - 1) % 26;
+        name = String.fromCharCode(65 + remainder) + name;
+        columnNumber = Math.floor((columnNumber - 1) / 26);
+      }
+      return name;
+    };
+    const attendancePercentFormat = value => value === null || value === undefined ? '—' : `${Math.round(value * 100)}%`;
+
+    try {
+      const targetLinePlugin = {
+        id: 'attendanceTargetLine',
+        afterDatasetsDraw(chart) {
+          const target = 0.9, scale = chart.scales.x;
+          if (!scale || target < scale.min || target > scale.max) return;
+          const x = scale.getPixelForValue(target), area = chart.chartArea, context = chart.ctx;
+          context.save();
+          context.strokeStyle = '#c2413b';
+          context.lineWidth = 3;
+          context.setLineDash([8, 6]);
+          context.beginPath();
+          context.moveTo(x, area.top);
+          context.lineTo(x, area.bottom);
+          context.stroke();
+          context.setLineDash([]);
+          context.fillStyle = '#a52f2a';
+          context.font = 'bold 14px sans-serif';
+          context.fillText('Target 90%', Math.min(x + 6, area.right - 95), area.top + 18);
+          context.restore();
+        }
+      };
+      const classChartHeight = Math.max(540, classAttendanceRows.length * 32);
+      const classChartRows = Math.ceil(classChartHeight / 32);
+      const periodUnitLabel = trendInterval === 'week' ? 'Minggu' : 'Bulan';
+      const heatmapDisplayLabels = sessionDates.length ? heatmapLabels : ['Tidak ada sesi'];
+      const heatmapHeaders = ['Kelas', ...heatmapDisplayLabels];
+      const heatmapRows = [...classGroups.keys()].sort((a, b) => a.localeCompare(b, 'id')).map(className => [
+        className,
+        ...heatmapDisplayLabels.map(label => {
+          if (!sessionDates.length) return '—';
+          const value = heatmapCellValue(className, label);
+          return value === null ? '' : value;
+        })
+      ]);
+      analysisSheet.columns = Array.from({length: Math.max(16, heatmapHeaders.length)}, (_, index) => ({width: index === 0 ? 22 : 13}));
+
+      const classComparisonImage = makeChartImage('Persentase Kehadiran per Kelas (urut tertinggi ke terendah)', {
+        type: 'bar',
+        data: {labels: classAttendanceRows.map(item => item.className), datasets: [{label: 'Persentase hadir', data: classAttendanceRows.map(item => item.rate), backgroundColor: '#287a5c', borderRadius: 4}]},
+        options: {
+          indexAxis: 'y',
+          scales: {x: {min: 0, max: 1, ticks: {callback: attendancePercentFormat}}, y: {ticks: {autoSkip: false}}},
+          plugins: {
+            legend: {display: false},
+            attendanceTargetLine: {value: 0.9},
+            tooltip: {callbacks: {label: context => {
+              const item = classAttendanceRows[context.dataIndex];
+              return item.rate === null ? 'Belum ada sesi' : `${attendancePercentFormat(item.rate)} (${item.present} dari ${item.eligible} kesempatan)`;
+            }}}
+          }
+        }
+      }, [targetLinePlugin], classChartHeight);
+
+      const trendImage = makeChartImage(`Tren Persentase Kehadiran per ${periodUnitLabel} · satu garis per ${trendDimension}`, {
+        type: 'line',
+        data: {labels: trendPeriods.map(period => period.label), datasets: trendDatasets.map(dataset => ({...dataset, pointRadius: 3, borderWidth: 3}))},
+        options: {
+          scales: {y: {min: 0, max: 1, ticks: {callback: attendancePercentFormat}}, x: {ticks: {maxRotation: 45, minRotation: 0}}},
+          plugins: {tooltip: {callbacks: {label: context => `${context.dataset.label}: ${attendancePercentFormat(context.parsed.y)}`}}}
+        }
+      });
+
+      const distributionImage = makeChartImage('Distribusi Persentase Kehadiran Siswa', {
+        type: 'bar',
+        data: {labels: distributionBands, datasets: [{label: 'Jumlah siswa', data: distributionHistogram, backgroundColor: ['#b64343', '#d27640', '#d7aa45', '#80a75a', '#287a5c', '#9aa3aa'], borderRadius: 5}]},
+        options: {scales: {y: {beginAtZero: true, ticks: {precision: 0}}, x: {ticks: {maxRotation: 0}}}, plugins: {legend: {display: false}}}
+      });
+
+      const compositionSeries = [
+        {label: 'Hadir (termasuk terlambat)', color: '#287a5c', value: item => item.present},
+        {label: 'Izin', color: '#557eaa', value: item => item.excused},
+        {label: 'Sakit', color: '#8d6eab', value: item => item.sick},
+        {label: 'Alpa (Tidak Masuk)', color: '#c85850', value: item => item.alpa},
+        {label: 'Status lainnya', color: '#d59b3a', value: item => item.other}
+      ];
+      const compositionChartHeight = Math.max(540, compositionRows.length * 32);
+      const compositionChartRows = Math.ceil(compositionChartHeight / 32);
+      const compositionImage = makeChartImage('Komposisi Status per Kelas (persentase dari catatan)', {
+        type: 'bar',
+        data: {
+          labels: compositionRows.map(item => item.className),
+          datasets: compositionSeries.map(series => ({
+            label: series.label,
+            backgroundColor: series.color,
+            data: compositionRows.map(item => item.total ? series.value(item) / item.total : 0),
+            borderRadius: 3
+          }))
+        },
+        options: {
+          indexAxis: 'y',
+          scales: {x: {stacked: true, min: 0, max: 1, ticks: {callback: attendancePercentFormat}}, y: {stacked: true, ticks: {autoSkip: false}}},
+          plugins: {tooltip: {callbacks: {label: context => `${context.dataset.label}: ${attendancePercentFormat(context.parsed.x)}`}}}
+        }
+      }, [], compositionChartHeight);
+
+      let nextChartRow = 8;
+      [
+        {image: classComparisonImage, rows: classChartRows},
+        {image: trendImage, rows: 17},
+        {image: distributionImage, rows: 17},
+        {image: compositionImage, rows: compositionChartRows}
+      ].forEach(section => {
+        const lastRow = nextChartRow + section.rows - 1;
+        for (let row = nextChartRow; row <= lastRow; row++) analysisSheet.getRow(row).height = 24;
+        const imageId = workbook.addImage({base64: section.image, extension: 'png'});
+        analysisSheet.addImage(imageId, `A${nextChartRow}:P${lastRow}`);
+        nextChartRow = lastRow + 2;
+      });
+
+      const heatmapTitleRow = nextChartRow;
+      const heatmapHeaderRow = heatmapTitleRow + 1;
+      const heatmapEndColumn = heatmapHeaders.length;
+      const heatmapEndRow = heatmapHeaderRow + heatmapRows.length;
+      analysisSheet.mergeCells(`A${heatmapTitleRow}:${excelColumnName(heatmapEndColumn)}${heatmapTitleRow}`);
+      const heatmapTitle = analysisSheet.getCell(`A${heatmapTitleRow}`);
+      heatmapTitle.value = 'Pola Kehadiran menurut Kelas dan Hari';
+      heatmapTitle.font = {bold: true, size: 14, color: {argb: 'FFFFFFFF'}};
+      heatmapTitle.fill = {type: 'pattern', pattern: 'solid', fgColor: {argb: 'FF21577A'}};
+      heatmapTitle.alignment = {vertical: 'middle'};
+      analysisSheet.getRow(heatmapTitleRow).height = 28;
+      const heatmapHeader = analysisSheet.getRow(heatmapHeaderRow);
+      heatmapHeaders.forEach((header, index) => {
+        const cell = heatmapHeader.getCell(index + 1);
+        cell.value = header;
+        cell.font = {bold: true, color: {argb: 'FFFFFFFF'}};
+        cell.fill = {type: 'pattern', pattern: 'solid', fgColor: {argb: 'FF21577A'}};
+        cell.alignment = {horizontal: 'center', vertical: 'middle', wrapText: true};
+      });
+      heatmapRows.forEach((row, rowIndex) => {
+        const excelRow = analysisSheet.getRow(heatmapHeaderRow + rowIndex + 1);
+        row.forEach((value, columnIndex) => {
+          const cell = excelRow.getCell(columnIndex + 1);
+          cell.value = value;
+          if (columnIndex > 0 && typeof value === 'number') {
+            cell.numFmt = '0%';
+            const color = value >= 0.9 ? 'FF4E9A67' : value >= 0.75 ? 'FFB8D9A8' : value >= 0.5 ? 'FFFFE69A' : 'FFF0A09A';
+            cell.fill = {type: 'pattern', pattern: 'solid', fgColor: {argb: color}};
+            cell.alignment = {horizontal: 'center'};
+          }
+        });
+      });
+      const noteRow = heatmapEndRow + 2;
+      analysisSheet.mergeCells(`A${noteRow}:${excelColumnName(Math.max(16, heatmapEndColumn))}${noteRow + 1}`);
+      const analysisNote = analysisSheet.getCell(`A${noteRow}`);
+      analysisNote.value = `Definisi: hadir = Hadir + Terlambat; persentase kehadiran memakai seluruh siswa aktif × hari absensi yang tercatat (${sessionDates.length} hari). Target grafik 90%. Tren memakai minggu untuk rentang ≤180 hari, selain itu per bulan; bila kelas lebih dari 8, garis digabung per ${trendDimension}. Heatmap menampilkan tanggal untuk ≤31 hari absensi, selain itu rata-rata per hari dalam seminggu. Alpa = Tidak Masuk; Tidak Sholat, Berhalangan, dan Di Luar Jadwal ditampilkan sebagai Status lainnya.`;
+      analysisNote.alignment = {wrapText: true, vertical: 'middle'};
+      analysisNote.font = {italic: true, size: 10, color: {argb: 'FF52616B'}};
+      analysisSheet.getRow(noteRow).height = 28;
+      analysisSheet.getRow(noteRow + 1).height = 28;
+    } finally {
+      chartInstances.forEach(chart => chart.destroy());
+      chartHost.remove();
+    }
+
     let tableIndex = 0;
     const addSheet = (name, columns, rows, widths) => {
       const sheet = workbook.addWorksheet(name, {views: [{state: 'frozen', ySplit: 1}]});
@@ -2137,26 +2560,11 @@ async function downloadAttendanceCounts() {
     ];
     addSheet('Ringkasan', ['Informasi', 'Nilai'], summaryRows, [24, 28]);
     addSheet('Rekap Per Siswa', headers, studentRows, studentWidths);
+    const distributionSheet = addSheet('Distribusi Siswa', ['Kelas', 'NISN', 'Nama', 'Hadir/Terlambat', 'Jumlah Sesi', 'Persentase Hadir', 'Kategori'], distributionRows.map(item => item.row), [18, 16, 32, 18, 15, 18, 18]);
+    distributionSheet.getColumn(6).numFmt = '0.0%';
     addSheet('Ringkasan Kelas', aggregateHeaders, classRows, [20, 16, ...statusColumns.map(() => 15), 16]);
     addSheet('Rekap Status', ['Status', 'Total Catatan'], statusColumns.map(([status, label]) => [label, allCounts[status]]), [22, 18]);
 
-    const dailyGroups = new Map();
-    const matchingNisns = new Set(matchingStudents.map(student => String(student.nisn)));
-    reportRows.forEach(row => {
-      if (!matchingNisns.has(String(row.nisn))) return;
-      if (!dailyGroups.has(row.date)) dailyGroups.set(row.date, Object.fromEntries(statusColumns.map(([status]) => [status, 0])));
-      const counts = dailyGroups.get(row.date);
-      if (Object.prototype.hasOwnProperty.call(counts, row.status)) counts[row.status]++;
-    });
-    const dailyRows = [];
-    const startDate = new Date(`${filters.from}T00:00:00Z`), endDate = new Date(`${filters.to}T00:00:00Z`);
-    if (!Number.isNaN(startDate.getTime()) && !Number.isNaN(endDate.getTime()) && startDate <= endDate) {
-      for (let date = new Date(startDate); date <= endDate; date.setUTCDate(date.getUTCDate() + 1)) {
-        const isoDate = date.toISOString().slice(0, 10);
-        const counts = dailyGroups.get(isoDate) || Object.fromEntries(statusColumns.map(([status]) => [status, 0]));
-        dailyRows.push([isoDate, ...statusColumns.map(([status]) => counts[status]), statusColumns.reduce((sum, [status]) => sum + counts[status], 0)]);
-      }
-    }
     addSheet('Rekap Harian', ['Tanggal', ...statusColumns.map(([, label]) => label), 'Total Catatan'], dailyRows, [16, ...statusColumns.map(() => 15), 16]);
 
     const usedNames = new Set(workbook.worksheets.map(sheet => sheet.name.toLowerCase()));
@@ -2184,10 +2592,18 @@ async function downloadAttendanceCounts() {
     const link = document.createElement('a');
     link.href = url;
     link.download = `hitung-absensi-${filters.from}-sd-${filters.to}.xlsx`;
+    link.style.display = 'none';
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(url);
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (error) {
     fail(error);
+  } finally {
+    if (downloadButton?.isConnected) {
+      downloadButton.disabled = false;
+      downloadButton.textContent = '↓ Unduh hitung absensi (.xlsx)';
+    }
   }
 }
 

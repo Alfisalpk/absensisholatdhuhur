@@ -14,7 +14,7 @@ Aplikasi web Google Apps Script dengan Google Sheets sebagai database. Source ut
 - Absensi menolak catatan ganda per siswa per hari dan memberi status berdasarkan waktu.
 - Dashboard dan halaman absensi mengambil ulang perubahan setiap 10 detik selama halaman terbuka; tanggal dari Sheets dinormalisasi ke zona waktu Asia/Jakarta.
 - Petugas dapat menetapkan status Sakit, Izin, atau Tidak sholat untuk siswa yang belum tercatat.
-- Rekap dapat difilter menurut rentang tanggal, tingkat, jurusan, dan status, lalu diunduh sebagai CSV.
+- Rekap dapat difilter menurut rentang tanggal, tingkat, jurusan, kelas, dan status. Tersedia unduhan CSV rinci dan Excel `.xlsx` berisi hitungan per status, ringkasan per kelas, rekap harian, sheet per kelas, serta analisis visual.
 - Data utama disimpan di tab `Users`, `Students`, `Attendance`, dan `Settings` pada spreadsheet.
 
 ## Pemasangan
@@ -28,6 +28,26 @@ Aplikasi web Google Apps Script dengan Google Sheets sebagai database. Source ut
 7. Buka URL `/exec` dari ponsel. Untuk pemindaian langsung, gunakan opsi **Ambil foto QR**. Webcam langsung dapat dibatasi sandbox HTML Service Apps Script meskipun izin situs sudah aktif.
 
 Untuk pembaruan source, simpan perubahan lalu gunakan **Deploy → Manage deployments → Edit → New version**.
+
+## Panduan rekap dan unduh Excel
+
+1. Masuk ke menu **Rekap absensi**.
+2. Pilih tanggal awal dan akhir. Jika diperlukan, batasi hasil dengan tingkat, jurusan, atau kelas.
+3. Klik **Unduh hitung absensi (.xlsx)** untuk membuat workbook Excel. Filter status pada halaman hanya mengatur tabel dan CSV; hitungan pada Excel tetap memuat semua status agar total tiap kategori lengkap.
+4. Gunakan sheet berikut untuk membaca hasil:
+
+   - **Analisa Data**: lima analisis visual: persentase kehadiran per kelas yang diurutkan tertinggi ke terendah dengan target 90%; tren mingguan atau bulanan; heatmap kelas dan tanggal/hari; histogram persentase hadir per siswa; dan diagram batang bertumpuk komposisi status per kelas.
+   - **Ringkasan**: periode, filter yang digunakan, jumlah siswa, dan total tiap status.
+   - **Rekap Per Siswa**: satu baris per siswa dengan hitungan Hadir, Tidak Sholat, Berhalangan, Tidak Masuk, Terlambat, Izin, Sakit, Di Luar Jadwal, dan Total Catatan.
+   - **Distribusi Siswa**: jumlah sesi hadir, persentase kehadiran, dan kelompok persentase tiap siswa untuk meninjau siswa yang mungkin memerlukan pendekatan khusus.
+   - **Ringkasan Kelas**: jumlah siswa dan jumlah catatan per status pada setiap kelas.
+   - **Rekap Status**: total keseluruhan untuk setiap status.
+   - **Rekap Harian**: jumlah tiap status untuk setiap tanggal dalam rentang terpilih.
+   - **Sheet kelas**: rincian per siswa untuk tiap kelas yang masuk filter. Bila filter kelas tertentu digunakan, hanya kelas tersebut yang dibuat.
+
+Semua analisis mengikuti rentang tanggal dan filter tingkat, jurusan, serta kelas. Hari absensi dihitung sebagai tanggal dalam rentang terpilih yang memiliki setidaknya satu catatan absensi. Persentase hadir dihitung dari status **Hadir** dan **Terlambat** dibagi jumlah siswa aktif dikalikan jumlah hari absensi. Tren memakai minggu untuk rentang sampai 180 hari dan bulan untuk rentang yang lebih panjang. Jika filter memuat lebih dari delapan kelas, garis tren digabung menurut tingkat atau jurusan, dengan kelompok yang lebih sedikit.
+
+Heatmap menampilkan tanggal satu per satu jika rentang memiliki paling banyak 31 hari absensi; untuk rentang lebih panjang, heatmap merangkum rata-rata menurut hari dalam seminggu. Komposisi status memakai **Hadir** (termasuk Terlambat), **Izin**, **Sakit**, **Alpa** (status Tidak Masuk), serta **Status lainnya** (Tidak Sholat, Berhalangan, dan Di Luar Jadwal). Komposisi dinyatakan sebagai persentase dari catatan yang tercatat di kelas tersebut. Grafik di sheet **Analisa Data** disimpan sebagai gambar berdasarkan data dan filter saat unduhan; unduh ulang workbook untuk memperbarui analisis setelah data berubah. Gunakan hasil analisis sebagai bahan telaah guru, bukan penilaian otomatis atas siswa.
 
 ## Format unggah siswa
 
@@ -51,6 +71,6 @@ Simpan sebagai CSV UTF-8. Tingkat hanya `X`, `XI`, atau `XII`; NISN harus 5–20
 
 - Admin pertama hanya dapat dibuat saat tab Users belum berisi akun. Simpan kredensial admin dengan aman.
 - Buat cadangan spreadsheet secara berkala dan batasi editor spreadsheet kepada pengelola tepercaya.
-- CDN untuk pustaka pemindai QR, QR code, dan font memerlukan koneksi internet saat halaman dibuka.
+- CDN untuk pustaka pemindai QR, QR code, ExcelJS, Chart.js, dan font memerlukan koneksi internet saat halaman dibuka. Ekspor Excel membutuhkan ExcelJS dan Chart.js; jika pustaka gagal dimuat, periksa koneksi lalu muat ulang aplikasi.
 - Setelan rentang waktu menyimpan batas status keterlambatan. Aturan kebijakan “tidak ikut sholat” tetap memerlukan petugas untuk mencatat status Tidak sholat pada siswa yang belum absen.
 - Ini adalah fondasi MVP; kebijakan disiplin, izin, privasi data siswa, dan prosedur sekolah perlu diselaraskan sebelum digunakan sebagai sistem resmi.
